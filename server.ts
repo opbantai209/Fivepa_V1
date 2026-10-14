@@ -6,7 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
-import { randomUUID, timingSafeEqual, createHmac } from 'crypto';
+import { randomUUID, randomBytes, timingSafeEqual, createHmac } from 'crypto';
 import bcrypt from 'bcryptjs';
 import type { Request, Response, NextFunction } from 'express';
 import { financeLedger, FinanceLedgerEngine } from './src/server/financeLedger.js';
@@ -45,13 +45,21 @@ if (IS_PROD) {
 }
 
 // Internal secrets
-const JWT_SECRET = 'wph_jwt_secret_internal_session_token_key_2026';
+const IS_PRODUCTION = process.env.NODE_ENV === 'production' || isCompiledProductionBundle;
+const JWT_SECRET: string = (() => {
+  const fromEnv = process.env.JWT_SECRET;
+  if (fromEnv && fromEnv.length >= 32) return fromEnv;
+  if (IS_PRODUCTION) {
+    throw new Error('JWT_SECRET environment variable (min 32 characters) is required in production.');
+  }
+  return 'dev-only-insecure-jwt-secret-do-not-use-in-production';
+})();
 
 const REQUIRE_KYC_FOR_PAYOUTS = false;
 
 // Helper to determine whether simulated development deposits are permitted
 function areSimulatedDepositsAllowed(): boolean {
-  if (process.env.NODE_ENV === 'production') {
+  if (IS_PRODUCTION) {
     return false;
   }
   return true;
@@ -398,6 +406,49 @@ async function handleLogin(req: Request, res: Response) {
     loginAttempts.set(clientIp, record);
   }
 
+function sanitizeAndCreateMessage(
+  sender: User,
+  order: Order,
+  body: any,
+  fileCheck: { ok: boolean; fileInfo?: any; error?: string }
+): Message {
+  const text = typeof body.text === 'string' ? body.text.trim() : '';
+  const isSystemOrStaff = isStaffUser(sender);
+  
+  let type = body.type;
+  if (!isSystemOrStaff && (type === 'system' || type === 'deliverable')) {
+    type = 'message';
+  }
+  if (type !== 'message' && type !== 'file') {
+    type = 'message';
+  }
+  if (type !== 'file' && !text) {
+    throw new Error('Message text is required.');
+  }
+  if (text.length > 5000) {
+    throw new Error('Message is too long.');
+  }
+
+  const metadata: any = {};
+  if (body.metadata && typeof body.metadata === 'object') {
+    if (body.metadata.clientMessageId) {
+      metadata.clientMessageId = String(body.metadata.clientMessageId);
+    }
+  }
+
+  return {
+    id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+    orderId: order.id,
+    senderId: sender.id,
+    senderName: sender.name,
+    text: text.slice(0, 5000),
+    timestamp: new Date().toISOString(),
+    type,
+    fileInfo: fileCheck.fileInfo,
+    metadata
+  };
+}
+
   const { email, password, userId, code, verificationCode, emailCode } = req.body || {};
   const lookupEmail = typeof email === 'string' && email.trim() ? email.trim().toLowerCase() : null;
   const lookupId = typeof userId === 'string' && userId.trim() ? userId.trim() : null;
@@ -525,9 +576,14 @@ app.get('/api/auth/me', (req, res) => {
 });
 
 app.post('/api/auth/demo-session', (req, res) => {
+  // Passwordless demo login is a development convenience only; never available in production.
+  if (IS_PRODUCTION) return res.status(404).json({ error: 'Not found.' });
   const { userId } = req.body || {};
   const user = users.find(u => u.id === userId);
   if (!user) return res.status(404).json({ error: 'Demo user not found.' });
+  if (['admin', 'super_admin', 'support'].includes(user.role)) {
+    return res.status(403).json({ error: 'Demo login is not available for privileged accounts.' });
+  }
   user.sessionVersion = (user.sessionVersion || 0) + 1;
   const token = signToken({ id: user.id, role: user.role, email: user.email, sessionVersion: user.sessionVersion });
   return res.json({ success: true, token, user: safeUser(user) });
@@ -688,6 +744,17 @@ function requireAuth(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
+// ---- Workstream access control -------------------------------------------------------------
+const STAFF_ROLES = ['admin', 'super_admin', 'support'];
+function isStaffUser(user: any): boolean {
+  return !!user && STAFF_ROLES.includes(user.role);
+}
+/** Only the order's buyer, its seller, or platform staff may read or write its workstream. */
+function canAccessOrderWorkstream(user: any, order: { buyerId: string; sellerId: string } | undefined): boolean {
+  if (!user || !order) return false;
+  return isStaffUser(user) || user.id === order.buyerId || user.id === order.sellerId;
+}
+
 function adminActor(req: Request): string {
   const authUserId = resolveAuthenticatedUserId(req);
   const u = authUserId ? users.find(user => user.id === authUserId) : null;
@@ -741,6 +808,18 @@ app.use('/api/admin', (req, res, next) => {
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 function rateLimit(max: number, windowMs: number) {
   return (req: Request, res: Response, next: NextFunction) => {
+    const key = (req as any).authenticatedUserId || req.ip;
+    const now = Date.now();
+    const record = rateBuckets.get(key) || { count: 0, resetAt: now + windowMs };
+    if (now > record.resetAt) {
+      record.count = 0;
+      record.resetAt = now + windowMs;
+    }
+    record.count++;
+    rateBuckets.set(key, record);
+    if (record.count > max) {
+      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+    }
     next();
   };
 }
@@ -883,6 +962,7 @@ interface Order {
     deliveredAt: string;
   }>;
   deliveryNotes?: string;
+  review?: Review;
 }
 
 interface Dispute {
@@ -979,6 +1059,7 @@ interface Message {
     notes?: string;
     reason?: string;
     rating?: number;
+    comment?: string;
     revisionId?: string;
     deliveryVersion?: number;
     requirementText?: string;
@@ -1079,13 +1160,29 @@ function notifyUser(message: Message, targetUserId: string) {
 }
 
 // Development / Testing credentials hashed with bcrypt
-const DEV_DEMO_PASSWORD_HASH = bcrypt.hashSync('password123', 10);
-const DEV_ADMIN_PASSWORD_HASH = bcrypt.hashSync('adminpassword123', 10);
+// Known demo passwords exist ONLY outside production. In production every seeded account gets an
+// unguessable random password; the super admin uses ADMIN_INITIAL_PASSWORD (or a one-time generated
+// password printed to the server log on first boot).
+const randomPasswordHash = () => bcrypt.hashSync(randomBytes(24).toString('hex'), 10);
+let bootstrapAdminPasswordNotice: string | null = null;
+function seedPasswordHashFor(role: string): string {
+  if (!IS_PRODUCTION) {
+    return bcrypt.hashSync(role === 'super_admin' ? 'adminpassword123' : 'password123', 10);
+  }
+  if (role === 'super_admin') {
+    const configured = process.env.ADMIN_INITIAL_PASSWORD;
+    if (configured && configured.length >= 12) return bcrypt.hashSync(configured, 10);
+    const generated = randomBytes(18).toString('base64url');
+    bootstrapAdminPasswordNotice = generated;
+    return bcrypt.hashSync(generated, 10);
+  }
+  return randomPasswordHash();
+}
 
 // Initial Data Seeds & Persistent Storage Engine
 let users: User[] = SEED_USERS.map(u => ({
   ...u,
-  password: u.role === 'super_admin' ? DEV_ADMIN_PASSWORD_HASH : DEV_DEMO_PASSWORD_HASH,
+  password: seedPasswordHashFor(u.role),
   sessionVersion: u.sessionVersion || 1,
   knownDevices: u.knownDevices || ['dev_default_session']
 }));
@@ -1252,6 +1349,7 @@ const DATA_DIR = path.join(__dirname, 'data');
 const MESSAGES_FILE = path.join(DATA_DIR, 'workstream_messages.json');
 const ORDERS_FILE = path.join(DATA_DIR, 'workstream_orders.json');
 const REVIEWS_FILE = path.join(DATA_DIR, 'workstream_reviews.json');
+const UPLOAD_INDEX_FILE = path.join(DATA_DIR, 'workstream_uploads.json'); // Added for completeness
 
 function ensureDataDirectory() {
   if (!fs.existsSync(DATA_DIR)) {
@@ -1259,30 +1357,40 @@ function ensureDataDirectory() {
   }
 }
 
-function saveMessagesToDisk() {
-  try {
+// Atomic writing logic
+const writeQueue = new Map<string, Promise<void>>();
+
+async function writeJsonAtomic(filePath: string, data: any) {
+  const serialized = JSON.stringify(data, null, 2);
+  const tempPath = `${filePath}.tmp.${Math.random().toString(36).substring(7)}`;
+  
+  const existingTask = writeQueue.get(filePath) || Promise.resolve();
+  
+  const task = existingTask.then(async () => {
     ensureDataDirectory();
-    fs.writeFileSync(MESSAGES_FILE, JSON.stringify(messages, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Failed to save messages to disk:', err);
-  }
+    fs.writeFileSync(tempPath, serialized, 'utf-8');
+    fs.renameSync(tempPath, filePath);
+  }).catch(err => {
+    console.error(`Failed to atomic write ${filePath}:`, err);
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+  });
+  
+  writeQueue.set(filePath, task);
+  return task;
 }
 
-function saveOrdersToDisk() {
-  try {
-    ensureDataDirectory();
-    fs.writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Failed to save orders to disk:', err);
-  }
-}
+function saveMessagesToDisk() { writeJsonAtomic(MESSAGES_FILE, messages); }
+function saveOrdersToDisk() { writeJsonAtomic(ORDERS_FILE, orders); }
+function saveReviewsToDisk() { writeJsonAtomic(REVIEWS_FILE, reviews); }
+function saveWorkstreamUploadIndex() { writeJsonAtomic(UPLOAD_INDEX_FILE, uploadIndex); }
 
-function saveReviewsToDisk() {
-  try {
-    ensureDataDirectory();
-    fs.writeFileSync(REVIEWS_FILE, JSON.stringify(reviews, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Failed to save reviews to disk:', err);
+function handleCorruption(filePath: string, error: any) {
+  console.error(`CRITICAL: Data corruption in ${filePath}:`, error);
+  if (process.env.ALLOW_EMPTY_DATA !== 'true') {
+    const backupPath = `${filePath}.corrupt-${Date.now()}`;
+    fs.renameSync(filePath, backupPath);
+    console.error(`Refusing to start. Broken file renamed to ${backupPath}. Set ALLOW_EMPTY_DATA=true to bypass.`);
+    process.exit(1);
   }
 }
 
@@ -1294,11 +1402,11 @@ function loadInitialOrdersAndMessages() {
     try {
       const data = fs.readFileSync(ORDERS_FILE, 'utf-8');
       const parsed = JSON.parse(data);
-      if (Array.isArray(parsed)) {
+      if (Array.isArray(parsed) && parsed.length > 0) {
         orders = parsed;
       }
     } catch (e) {
-      console.error('Error reading orders file:', e);
+      handleCorruption(ORDERS_FILE, e);
     }
   }
 
@@ -1311,7 +1419,7 @@ function loadInitialOrdersAndMessages() {
         messages = parsed;
       }
     } catch (e) {
-      console.error('Error reading messages file:', e);
+      handleCorruption(MESSAGES_FILE, e);
     }
   }
 
@@ -1324,8 +1432,48 @@ function loadInitialOrdersAndMessages() {
         reviews = parsed;
       }
     } catch (e) {
-      console.error('Error reading reviews file:', e);
+      handleCorruption(REVIEWS_FILE, e);
     }
+  }
+
+  // One-time migration: convert every message with a non-ISO timestamp to an ISO string
+  let messagesMigrated = false;
+  for (const msg of messages) {
+    if (!msg.timestamp || !/\d{4}-\d{2}-\d{2}/.test(msg.timestamp)) {
+      const order = orders.find(o => o.id === msg.orderId);
+      let baseDate = order?.createdAt;
+      if (!baseDate || !/\d{4}-\d{2}-\d{2}/.test(baseDate)) {
+        baseDate = new Date().toISOString();
+      }
+      const datePart = baseDate.split('T')[0];
+
+      const timeMatch = msg.timestamp ? msg.timestamp.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?/i) : null;
+      let hours = 0;
+      let minutes = 0;
+      let seconds = 0;
+      if (timeMatch) {
+        hours = parseInt(timeMatch[1], 10);
+        minutes = parseInt(timeMatch[2], 10);
+        seconds = timeMatch[3] ? parseInt(timeMatch[3], 10) : 0;
+        const ampm = timeMatch[4] ? timeMatch[4].toUpperCase() : '';
+        if (ampm === 'PM' && hours < 12) hours += 12;
+        if (ampm === 'AM' && hours === 12) hours = 0;
+      }
+
+      const d = new Date(`${datePart}T00:00:00.000Z`);
+      if (!isNaN(d.getTime())) {
+        d.setUTCHours(hours, minutes, seconds, 0);
+        msg.timestamp = d.toISOString();
+        messagesMigrated = true;
+      } else {
+        msg.timestamp = new Date().toISOString();
+        messagesMigrated = true;
+      }
+    }
+  }
+  if (messagesMigrated) {
+    saveMessagesToDisk();
+    console.log('Migrated legacy non-ISO message timestamps to ISO strings.');
   }
 
   // Synchronize user review stats
@@ -1360,6 +1508,11 @@ function enrichOrderWithServiceInfo(o: Order, isAdmin: boolean = false) {
   const serviceTitle = gig?.title || project?.title || o.serviceTitle || o.title;
   const serviceThumbnail = o.serviceThumbnail || gig?.image || 'https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=800&h=500&fit=crop';
 
+  const orderMessages = messages.filter(m => m.orderId === o.id);
+  const lastMsg = orderMessages.length > 0 
+    ? [...orderMessages].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0] 
+    : undefined;
+
   const base = {
     ...o,
     gigId: o.gigId || gig?.id,
@@ -1370,6 +1523,8 @@ function enrichOrderWithServiceInfo(o: Order, isAdmin: boolean = false) {
     serviceUrl,
     serviceTitle,
     serviceThumbnail,
+    lastMessage: lastMsg?.text,
+    lastMessageTime: lastMsg?.timestamp,
     isTimerPaused: Boolean(o.isTimerPaused)
   };
 
@@ -1952,13 +2107,20 @@ app.post('/api/orders/:id/deliverable', requireAuth, (req, res) => {
 
   const rawFiles = Array.isArray(req.body.files) && req.body.files.length > 0 
     ? req.body.files 
-    : [{ name: req.body.name || 'deliverable_final.zip', size: req.body.size || '3.5 MB', url: req.body.url || '#' }];
+    : (req.body.name ? [{ name: req.body.name, size: req.body.size, url: req.body.url }] : []);
+  if (rawFiles.length === 0) {
+    return res.status(400).json({ error: 'At least one uploaded deliverable file is required.' });
+  }
+  const validation = validateStoredWorkstreamFiles(rawFiles, caller);
+  if (!validation.ok) {
+    return res.status(400).json({ error: validation.error });
+  }
 
-  const uploadedFiles = rawFiles.map((f: any, idx: number) => ({
+  const uploadedFiles = validation.files.map((f: any, idx: number) => ({
     id: 'deliv_' + Date.now() + '_' + idx,
-    name: f.name || 'deliverable_file.zip',
-    size: f.size || '1.0 MB',
-    url: f.url || '#',
+    name: f.name,
+    size: f.size,
+    url: f.url,
     uploadedAt: new Date().toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }),
     type: 'deliverable'
   }));
@@ -2009,11 +2171,14 @@ app.post('/api/orders/:id/revision', requireAuth, (req, res) => {
     return res.status(403).json({ error: 'Forbidden: Only the order buyer or an administrator can request revisions.' });
   }
 
-  if (order.status !== 'delivered' && order.status !== 'in_progress' && order.status !== 'funded_in_escrow') {
-    return res.status(409).json({ error: `Cannot request revisions for an order in "${order.status}" status.` });
+  if (order.status !== 'delivered') {
+    return res.status(409).json({ error: `Cannot request revisions for an order in "${order.status}" status (order must be delivered first).` });
   }
 
-  const reason = (req.body.reason || 'Revisions requested on latest deliverable.').trim();
+  const reason = (req.body.reason || '').trim();
+  if (!reason) {
+    return res.status(400).json({ error: 'A revision reason is required.' });
+  }
   if (!order.revisions) order.revisions = [];
   const revisionEntry = {
     id: 'rev_' + Date.now(),
@@ -2185,12 +2350,18 @@ app.post('/api/orders/:id/force-cancel', requireAdmin, (req, res) => {
 });
 
 // Send Chat Message into Order Workstream
-app.post('/api/orders/:id/message', requireAuth, (req, res) => {
+app.post('/api/orders/:id/message', requireAuth, rateLimit(10, 60_000), (req, res) => {
   const order = orders.find(o => o.id === req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
-  const userId = (req as any).authenticatedUserId || 'admin_user';
-  const user = users.find(u => u.id === userId) || users[0];
+  const userId = (req as any).authenticatedUserId;
+  const user = users.find(u => u.id === userId);
+  if (!user) return res.status(401).json({ error: 'User not found' });
+  if (!canAccessOrderWorkstream(user, order)) {
+    return res.status(403).json({ error: 'Forbidden: You are not a participant of this Workstream.' });
+  }
+  const fileCheck = validateMessageFileInfo(req.body.fileInfo, user);
+  if (!fileCheck.ok) return res.status(400).json({ error: fileCheck.error });
 
   const clientMessageId = typeof req.body.clientMessageId === 'string' ? req.body.clientMessageId : undefined;
   if (clientMessageId) {
@@ -2198,17 +2369,7 @@ app.post('/api/orders/:id/message', requireAuth, (req, res) => {
     if (existing) return res.json({ success: true, message: existing, deduplicated: true });
   }
 
-  const newMsg: Message = {
-    id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
-    orderId: order.id,
-    senderId: user.id,
-    senderName: user.name,
-    text: req.body.text || '',
-    timestamp: new Date().toISOString(),
-    type: req.body.type || 'message',
-    fileInfo: req.body.fileInfo,
-    metadata: { ...(req.body.metadata || {}), ...(clientMessageId ? { clientMessageId } : {}) }
-  };
+  const newMsg = sanitizeAndCreateMessage(user, order, req.body, fileCheck);
 
   messages.push(newMsg);
   saveMessagesToDisk();
@@ -2546,9 +2707,8 @@ app.post('/api/payments/escrow/release', requireAuth, (req, res) => {
       return res.status(400).json({ error: 'Cannot release escrow: Order is under active dispute. Resolve the dispute first.' });
     }
 
-    const releasableStatuses = ['delivered', 'in_progress', 'revision', 'funded_in_escrow'];
-    if (!releasableStatuses.includes(order.status)) {
-      return res.status(400).json({ error: `Cannot release escrow for order in "${order.status}" status.` });
+    if (order.status !== 'delivered') {
+      return res.status(400).json({ error: 'Cannot release escrow before deliverables have been submitted by the seller.' });
     }
 
     const esc = financeLedger.getEscrow(order.id);
@@ -3577,48 +3737,92 @@ app.get('/api/users/:userId/reviews', (req, res) => {
   res.json(userReviews);
 });
 
-app.post('/api/reviews', (req, res) => {
-  const authUserId = (req as any).authenticatedUserId || resolveAuthenticatedUserId(req) || 'admin_user';
-  const caller = users.find(u => u.id === authUserId) || users[0];
-  const { orderId, targetUserId, rating, comment, orderTitle } = req.body;
-  if (!targetUserId) return res.status(400).json({ error: 'Target user ID is required' });
+app.post('/api/reviews', requireAuth, (req, res) => {
+  const authUserId = (req as any).authenticatedUserId;
+  const caller = users.find(u => u.id === authUserId);
+  if (!caller) return res.status(401).json({ error: 'Authentication required to submit a review' });
 
-  const order = orderId ? orders.find(o => o.id === orderId) : undefined;
+  const { orderId, targetUserId, rating, comment, orderTitle } = req.body;
+  if (!orderId) {
+    return res.status(400).json({ error: 'Order ID is required' });
+  }
+
+  const numRating = Number(rating);
+  if (isNaN(numRating) || numRating < 1 || numRating > 5) {
+    return res.status(400).json({ error: 'Rating must be an integer between 1 and 5 stars' });
+  }
+
+  if (!comment || typeof comment !== 'string' || !comment.trim()) {
+    return res.status(400).json({ error: 'Review comment cannot be empty' });
+  }
+
+  const order = orders.find(o => o.id === orderId);
   if (!order) return res.status(404).json({ error: 'Workstream order not found' });
+  if (!canAccessOrderWorkstream(caller, order)) {
+    return res.status(403).json({ error: 'Forbidden: Only order participants can submit reviews.' });
+  }
+
+  // Completed-order eligibility
   if (order.status !== 'completed') {
     return res.status(409).json({ error: `Reviews can only be submitted for completed Workstreams (current status: ${order.status}).` });
   }
-  if (reviews.some(r => r.orderId === order.id && r.reviewerId === caller.id)) {
+
+  // Duplicate-review prevention
+  if (reviews.some(r => r.orderId === order.id && r.reviewerId === caller.id) || (order.review && order.review.reviewerId === caller.id)) {
     return res.status(409).json({ error: 'A review has already been submitted for this Workstream.' });
   }
 
+  const resolvedTargetUserId = targetUserId || (caller.id === order.buyerId ? order.sellerId : order.buyerId);
+
   const newReview: Review = {
     id: 'rev_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-    orderId: orderId || ('ord_' + Date.now()),
+    orderId: order.id,
     reviewerId: caller.id,
     reviewerName: caller.name,
     reviewerAvatar: caller.avatar,
-    targetUserId,
-    rating: Math.min(5, Math.max(1, Number(rating) || 5)),
-    comment: (comment || 'Excellent collaboration and great deliverables.').trim(),
-    orderTitle: orderTitle || 'Workstream Milestone Deliverable',
-    gigId: req.body.gigId,
-    projectId: req.body.projectId,
+    targetUserId: resolvedTargetUserId,
+    rating: numRating,
+    comment: comment.trim(),
+    orderTitle: orderTitle || order.title || 'Workstream Milestone Deliverable',
+    gigId: req.body.gigId || order.gigId,
+    projectId: req.body.projectId || order.projectId,
     createdAt: new Date().toISOString().split('T')[0]
   };
 
   reviews.unshift(newReview);
   saveReviewsToDisk();
 
+  order.review = newReview;
+  saveOrdersToDisk();
+
   // Dynamically update target user's rating and reviewsCount
-  const targetUser = users.find(u => u.id === targetUserId);
+  const targetUser = users.find(u => u.id === resolvedTargetUserId);
   if (targetUser) {
-    const userReviews = reviews.filter(r => r.targetUserId === targetUserId);
+    const userReviews = reviews.filter(r => r.targetUserId === resolvedTargetUserId);
     targetUser.reviewsCount = userReviews.length;
     targetUser.rating = Number((userReviews.reduce((sum, r) => sum + r.rating, 0) / userReviews.length).toFixed(1));
   }
 
-  res.status(201).json({ success: true, review: newReview });
+  // Broadcast system message to workstream
+  const sysMsg: Message = {
+    id: 'msg_' + Date.now(),
+    orderId: order.id,
+    senderId: 'system',
+    senderName: 'WorkSphere Reviews',
+    text: `⭐ Review submitted by ${caller.name} (${newReview.rating}/5 stars): "${newReview.comment}"`,
+    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    type: 'system',
+    metadata: {
+      action: 'review_submitted',
+      rating: newReview.rating,
+      comment: newReview.comment
+    }
+  };
+  messages.push(sysMsg);
+  saveMessagesToDisk();
+  broadcastMessage(sysMsg, order.id);
+
+  res.status(201).json({ success: true, review: newReview, order: enrichOrderWithServiceInfo(order) });
 });
 app.get('/api/support-tickets', requireAuth, (req, res) => {
   const authUserId = (req as any).authenticatedUserId;
@@ -3682,7 +3886,7 @@ app.post('/api/support-tickets', requireAuth, (req, res) => {
     timestamp: new Date().toLocaleString()
   });
 
-  res.json(newTicket);
+  res.status(201).json({ success: true, ticket: newTicket, ...newTicket });
 });
 
 const WORKSTREAM_UPLOADS_DIR = path.join(__dirname, 'data', 'uploads', 'workstream');
@@ -3690,13 +3894,183 @@ if (!fs.existsSync(WORKSTREAM_UPLOADS_DIR)) {
   fs.mkdirSync(WORKSTREAM_UPLOADS_DIR, { recursive: true });
 }
 
-app.post('/api/workstream/upload', express.raw({ type: '*/*', limit: '50mb' }), (req, res) => {
+const WORKSTREAM_FILE_URL_PREFIX = '/api/workstream/files/';
+const WORKSTREAM_UPLOAD_INDEX_FILE = path.join(DATA_DIR, 'workstream_uploads.json');
+const WORKSTREAM_MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // 25 MB
+const WORKSTREAM_ABANDONED_UPLOAD_TTL_MS = 24 * 3600 * 1000;
+// Allowed attachment types. SVG/HTML/JS are deliberately excluded (script-injection risk).
+const WORKSTREAM_ALLOWED_EXTENSIONS = new Set([
+  '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.txt', '.md', '.csv', '.json',
+  '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.7z',
+  '.mp4', '.mov', '.webm', '.mp3', '.wav', '.fig', '.psd', '.ai', '.sketch'
+]);
+const WORKSTREAM_INLINE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf']);
+
+// Upload ownership index: filename -> who uploaded it and when. Persisted so access rules and
+// abandoned-upload cleanup survive restarts.
+interface WorkstreamUploadRecord { ownerId: string; createdAt: string; }
+let workstreamUploadIndex: Record<string, WorkstreamUploadRecord> = {};
+try {
+  if (fs.existsSync(WORKSTREAM_UPLOAD_INDEX_FILE)) {
+    workstreamUploadIndex = JSON.parse(fs.readFileSync(WORKSTREAM_UPLOAD_INDEX_FILE, 'utf-8')) || {};
+  }
+} catch (err) {
+  console.error('Failed to load workstream upload index:', err);
+}
+
+// (Old implementation removed in favor of atomic helper)
+
+function workstreamFilenameFromUrl(url: unknown): string | null {
+  if (typeof url !== 'string' || !url.startsWith(WORKSTREAM_FILE_URL_PREFIX)) return null;
+  const name = path.basename(url.slice(WORKSTREAM_FILE_URL_PREFIX.length).split('?')[0]);
+  return name || null;
+}
+
+/** True when any message, deliverable or delivery record still points at this stored file. */
+function workstreamFileReferencedBy(filename: string): Array<{ buyerId: string; sellerId: string }> {
+  const holders: Array<{ buyerId: string; sellerId: string }> = [];
+  const matches = (u: unknown) => workstreamFilenameFromUrl(u) === filename;
+  for (const o of orders as any[]) {
+    const inOrder =
+      (Array.isArray(o.deliverableFiles) && o.deliverableFiles.some((f: any) => matches(f?.url))) ||
+      (Array.isArray(o.deliveryHistory) && o.deliveryHistory.some((d: any) => Array.isArray(d.files) && d.files.some((f: any) => matches(f?.url)))) ||
+      messages.some(m => m.orderId === o.id && matches(m.fileInfo?.url));
+    if (inOrder) holders.push({ buyerId: o.buyerId, sellerId: o.sellerId });
+  }
+  return holders;
+}
+
+function canAccessWorkstreamFile(user: any, filename: string): boolean {
+  if (!user) return false;
+  if (isStaffUser(user)) return true;
+  if (workstreamUploadIndex[filename]?.ownerId === user.id) return true;
+  return workstreamFileReferencedBy(filename).some(h => h.buyerId === user.id || h.sellerId === user.id);
+}
+
+/** A message attachment must be a file the sender uploaded (or staff attaching one that exists). */
+function validateMessageFileInfo(fileInfo: any, sender: any):
+  { ok: true; fileInfo: any } | { ok: false; error: string } {
+  if (fileInfo === undefined || fileInfo === null) return { ok: true, fileInfo: undefined };
+  if (typeof fileInfo !== 'object') return { ok: false, error: 'Invalid file attachment.' };
+  const filename = workstreamFilenameFromUrl(fileInfo.url);
+  if (!filename || !fs.existsSync(path.join(WORKSTREAM_UPLOADS_DIR, filename))) {
+    return { ok: false, error: 'Attachments must be uploaded files; placeholder or external URLs are not accepted.' };
+  }
+  if (!isStaffUser(sender) && workstreamUploadIndex[filename]?.ownerId !== sender.id) {
+    return { ok: false, error: 'You can only attach files that you uploaded.' };
+  }
+  const bytes = fs.statSync(path.join(WORKSTREAM_UPLOADS_DIR, filename)).size;
+  const size = bytes > 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return {
+    ok: true,
+    fileInfo: {
+      name: typeof fileInfo.name === 'string' && fileInfo.name.trim() ? fileInfo.name.trim().slice(0, 200) : filename,
+      size,
+      url: `${WORKSTREAM_FILE_URL_PREFIX}${filename}`,
+      ...(typeof fileInfo.type === 'string' ? { type: fileInfo.type.slice(0, 100) } : {})
+    }
+  };
+}
+
+// Validates that client-submitted file records point at files actually stored by the upload endpoint
+// AND uploaded by the submitting user (or staff).
+function validateStoredWorkstreamFiles(raw: any[], submitter?: any): { ok: true; files: Array<{ name: string; size: string; url: string }> } | { ok: false; error: string } {
+  const out: Array<{ name: string; size: string; url: string }> = [];
+  for (const f of raw) {
+    const filename = workstreamFilenameFromUrl(f?.url);
+    if (!filename) {
+      return { ok: false, error: 'Deliverable files must be uploaded first; placeholder or external URLs are not accepted.' };
+    }
+    if (!fs.existsSync(path.join(WORKSTREAM_UPLOADS_DIR, filename))) {
+      return { ok: false, error: `Uploaded file not found on server: ${filename}` };
+    }
+    if (submitter && !isStaffUser(submitter) && workstreamUploadIndex[filename]?.ownerId !== submitter.id) {
+      return { ok: false, error: 'You can only deliver files that you uploaded.' };
+    }
+    const bytes = fs.statSync(path.join(WORKSTREAM_UPLOADS_DIR, filename)).size;
+    const size = bytes > 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+    const parts = filename.split('_');
+    const fallbackName = parts.length > 2 ? parts.slice(2).join('_') : filename;
+    out.push({ name: typeof f?.name === 'string' && f.name.trim() ? f.name.trim().slice(0, 200) : fallbackName, size, url: `${WORKSTREAM_FILE_URL_PREFIX}${filename}` });
+  }
+  return { ok: true, files: out };
+}
+
+// Remove uploads that were never attached to a message or delivery (WS-31). Only files recorded in
+// the upload index are ever deleted; legacy/unknown files are left alone.
+function cleanupAbandonedWorkstreamUploads() {
+  const now = Date.now();
+  let changed = false;
+  for (const [filename, rec] of Object.entries(workstreamUploadIndex)) {
+    if (now - new Date(rec.createdAt).getTime() < WORKSTREAM_ABANDONED_UPLOAD_TTL_MS) continue;
+    if (workstreamFileReferencedBy(filename).length > 0) continue;
+    try { fs.unlinkSync(path.join(WORKSTREAM_UPLOADS_DIR, filename)); } catch { /* already gone */ }
+    delete workstreamUploadIndex[filename];
+    changed = true;
+  }
+  if (changed) saveWorkstreamUploadIndex();
+setInterval(cleanupAbandonedWorkstreamUploads, 3600_000).unref?.();
+
+// Periodically check and auto-accept orders after review window
+setInterval(() => {
+  const settings = siteSettings.getSettings();
+  const days = settings.marketplace.autoCompleteDeliveredDays;
+  const now = Date.now();
+  for (const order of orders) {
+    if (order.status === 'delivered') {
+      const deliveredAt = new Date(order.deliveryHistory[order.deliveryHistory.length - 1].deliveredAt).getTime();
+      if (now - deliveredAt > days * 24 * 60 * 60 * 1000) {
+        // Idempotency check: order is still 'delivered'
+        if (order.status !== 'delivered') continue;
+        
+        // Final sanity check: not disputed
+        const dispute = disputes.find(d => d.orderId === order.id && d.status === 'open');
+        if (dispute) continue;
+        
+        console.log(`Auto-accepting order ${order.id} after ${days} days.`);
+        releaseOrderFunds(order, 'System', 'Auto-accept after buyer review window', `auto_${order.id}`);
+        
+        const sysMsg: Message = {
+            id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+            orderId: order.id,
+            senderId: 'system',
+            senderName: 'System',
+            text: `Order automatically accepted after buyer review window.`,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            type: 'system',
+            metadata: {
+              action: 'order_auto_accepted'
+            }
+        };
+        messages.push(sysMsg);
+        saveMessagesToDisk();
+        broadcastMessage(sysMsg, order.id);
+        
+        auditLogs.unshift({
+            id: 'log_' + Date.now(),
+            actor: 'System',
+            role: 'super_admin',
+            action: 'ORDER_AUTO_ACCEPTED',
+            target: `Order ${order.id}`,
+            details: `Order auto-accepted after ${days} days.`,
+            timestamp: new Date().toLocaleString()
+        });
+      }
+    }
+  }
+}, 60 * 60 * 1000).unref?.();
+app.post('/api/workstream/upload', requireAuth, rateLimit(5, 60_000), express.raw({ type: '*/*', limit: WORKSTREAM_MAX_UPLOAD_BYTES }), (req, res) => {
   try {
+    const caller = (req as any).authenticatedUser;
     const rawName = (req.query.name as string) || 'attachment';
-    const decodedName = decodeURIComponent(rawName);
+    let decodedName: string;
+    try { decodedName = decodeURIComponent(rawName); } catch { decodedName = rawName; }
     const safeBase = path.basename(decodedName).replace(/[^a-zA-Z0-9._-]/g, '_') || 'file';
-    const ext = path.extname(safeBase);
-    const nameWithoutExt = path.basename(safeBase, ext);
+    const ext = path.extname(safeBase).toLowerCase();
+    if (!WORKSTREAM_ALLOWED_EXTENSIONS.has(ext)) {
+      return res.status(415).json({ error: `File type "${ext || 'unknown'}" is not allowed.` });
+    }
+    const nameWithoutExt = path.basename(safeBase, path.extname(safeBase));
     const storedFilename = `${Date.now()}_${randomUUID().slice(0, 8)}_${nameWithoutExt}${ext}`;
     const filePath = path.join(WORKSTREAM_UPLOADS_DIR, storedFilename);
 
@@ -3704,8 +4078,13 @@ app.post('/api/workstream/upload', express.raw({ type: '*/*', limit: '50mb' }), 
     if (!buffer || buffer.length === 0) {
       return res.status(400).json({ error: 'No file data received' });
     }
+    if (buffer.length > WORKSTREAM_MAX_UPLOAD_BYTES) {
+      return res.status(413).json({ error: 'File is too large (25 MB maximum).' });
+    }
 
     fs.writeFileSync(filePath, buffer);
+    workstreamUploadIndex[storedFilename] = { ownerId: caller.id, createdAt: new Date().toISOString() };
+    saveWorkstreamUploadIndex();
 
     const bytes = buffer.length;
     const sizeStr = bytes > 1024 * 1024
@@ -3717,7 +4096,7 @@ app.post('/api/workstream/upload', express.raw({ type: '*/*', limit: '50mb' }), 
     res.json({
       name: safeBase,
       size: sizeStr,
-      url: `/api/workstream/files/${storedFilename}`,
+      url: `${WORKSTREAM_FILE_URL_PREFIX}${storedFilename}`,
       type: mimeType
     });
   } catch (err: any) {
@@ -3726,47 +4105,63 @@ app.post('/api/workstream/upload', express.raw({ type: '*/*', limit: '50mb' }), 
   }
 });
 
-app.get('/api/workstream/files/:filename', (req, res) => {
+app.get('/api/workstream/files/:filename', requireAuth, (req, res) => {
   const filename = path.basename(req.params.filename);
   const filePath = path.join(WORKSTREAM_UPLOADS_DIR, filename);
   if (!fs.existsSync(filePath)) {
     return res.status(404).json({ error: 'File not found' });
   }
+  if (!canAccessWorkstreamFile((req as any).authenticatedUser, filename)) {
+    return res.status(403).json({ error: 'Forbidden: You do not have access to this file.' });
+  }
 
   const parts = filename.split('_');
   const originalName = parts.length > 2 ? parts.slice(2).join('_') : filename;
+  const ext = path.extname(filename).toLowerCase();
 
-  if (req.query.download === '1') {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'private, no-store');
+
+  // Only safe types render inline; everything else is forced to download.
+  if (req.query.download === '1' || !WORKSTREAM_INLINE_EXTENSIONS.has(ext)) {
     return res.download(filePath, originalName);
   }
 
   res.sendFile(filePath);
 });
 
-app.get('/api/messages/:orderId', (req, res) => {
+app.get('/api/messages/:orderId', requireAuth, (req, res) => {
+  const order = orders.find(o => o.id === req.params.orderId);
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+  if (!canAccessOrderWorkstream((req as any).authenticatedUser, order)) {
+    return res.status(403).json({ error: 'Forbidden: You are not a participant of this Workstream.' });
+  }
   const filtered = messages.filter(m => m.orderId === req.params.orderId);
   res.json(filtered);
 });
 
-app.post('/api/messages', (req, res) => {
-  const authUserId = (req as any).authenticatedUserId || resolveAuthenticatedUserId(req) || 'admin_user';
-  const caller = (req as any).authenticatedUser || users.find(u => u.id === authUserId) || users[0];
+app.post('/api/messages', requireAuth, (req, res) => {
+  const authUserId = (req as any).authenticatedUserId;
+  const caller = users.find(u => u.id === authUserId);
+  if (!caller) return res.status(401).json({ error: 'User not found' });
   const orderId = req.body.orderId;
   if (!orderId) return res.status(400).json({ error: 'Order ID is required' });
 
   let order = orders.find(o => o.id === orderId);
   if (!order) return res.status(404).json({ error: 'Order not found' });
+  if (!canAccessOrderWorkstream(caller, order)) {
+    return res.status(403).json({ error: 'Forbidden: You are not a participant of this Workstream.' });
+  }
+  const fileCheck = validateMessageFileInfo(req.body.fileInfo, caller);
+  if (!fileCheck.ok) return res.status(400).json({ error: fileCheck.error });
 
-  const newMsg: Message = {
-    id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-    orderId,
-    senderId: caller.id,
-    senderName: caller.name,
-    text: req.body.text || '',
-    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    type: req.body.type || 'message',
-    fileInfo: req.body.fileInfo
-  };
+  const clientMessageId = typeof req.body.clientMessageId === 'string' ? req.body.clientMessageId : undefined;
+  if (clientMessageId) {
+    const existing = messages.find(m => m.orderId === orderId && m.metadata?.clientMessageId === clientMessageId);
+    if (existing) return res.json({ success: true, message: existing, deduplicated: true });
+  }
+
+  const newMsg = sanitizeAndCreateMessage(caller, order, req.body, fileCheck);
 
   messages.push(newMsg);
   saveMessagesToDisk();
@@ -4447,19 +4842,9 @@ function broadcastMessage(message: Message, orderId: string) {
   for (const client of clients) {
     if (client.readyState === WebSocket.OPEN) {
       const clientUserId = (client as any).authenticatedUserId;
-      if (!clientUserId) {
-        client.send(payload);
-        client.send(updatePayload);
-        continue;
-      }
+      if (!clientUserId) continue; // never broadcast to unauthenticated sockets
       const clientUser = users.find(u => u.id === clientUserId);
-      const isAuthorized = !order || (
-        clientUser && (
-          ['admin', 'super_admin', 'support'].includes(clientUser.role) ||
-          clientUserId === order.buyerId ||
-          clientUserId === order.sellerId
-        )
-      );
+      const isAuthorized = !!order && canAccessOrderWorkstream(clientUser, order);
       
       if (isAuthorized) {
         client.send(payload);
@@ -4489,6 +4874,8 @@ wss.on('connection', (ws, req) => {
     const token = url.searchParams.get('token');
     let matchedUserId: string | null = null;
 
+    // Only a valid signed session token authenticates a socket. Raw user IDs / usernames and
+    // anonymous connections are rejected (no more fallback to an admin identity).
     if (token) {
       const payload = verifyToken(token);
       if (payload && payload.id) {
@@ -4496,17 +4883,12 @@ wss.on('connection', (ws, req) => {
         if (dbUser && dbUser.status === 'active') {
           matchedUserId = dbUser.id;
         }
-      } else {
-        const directUser = users.find(u => u.id === token || u.username === token);
-        if (directUser && directUser.status === 'active') {
-          matchedUserId = directUser.id;
-        }
       }
     }
 
-    // Default to admin_user if unauthenticated connection in preview/dev environment
     if (!matchedUserId) {
-      matchedUserId = 'admin_user';
+      try { ws.close(4401, 'Authentication required'); } catch {}
+      return;
     }
     
     (ws as any).authenticatedUserId = matchedUserId;
@@ -4573,8 +4955,12 @@ function setupWebSocketHandlers(ws: WebSocket) {
       }
 
       if (parsed.type === 'NEW_MESSAGE') {
-        const userId = (ws as any).authenticatedUserId || 'admin_user';
-        const user = users.find(u => u.id === userId) || users[0];
+        const userId = (ws as any).authenticatedUserId;
+        const user = users.find(u => u.id === userId);
+        if (!user || user.status !== 'active') {
+          ws.send(JSON.stringify({ error: 'Authentication required' }));
+          return;
+        }
 
         const orderId = parsed.orderId;
         if (typeof orderId !== 'string' || !orderId.trim()) {
@@ -4585,6 +4971,16 @@ function setupWebSocketHandlers(ws: WebSocket) {
         let order = orders.find(o => o.id === orderId.trim());
         if (!order) {
           ws.send(JSON.stringify({ error: 'Order not found' }));
+          return;
+        }
+
+        if (!canAccessOrderWorkstream(user, order)) {
+          ws.send(JSON.stringify({ error: 'Forbidden: You are not a participant of this Workstream.' }));
+          return;
+        }
+        const wsFileCheck = validateMessageFileInfo(parsed.fileInfo, user);
+        if (!wsFileCheck.ok) {
+          ws.send(JSON.stringify({ error: wsFileCheck.error }));
           return;
         }
 
@@ -4599,17 +4995,7 @@ function setupWebSocketHandlers(ws: WebSocket) {
           }
         }
 
-        const newMsg: Message = {
-          id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-          orderId: order.id,
-          senderId: user.id,
-          senderName: user.name,
-          text: text.trim(),
-          timestamp: new Date().toISOString(),
-          type: msgType,
-          fileInfo: parsed.fileInfo,
-          metadata: { ...(parsed.metadata || {}), ...(clientMessageId ? { clientMessageId } : {}) }
-        };
+        const newMsg = sanitizeAndCreateMessage(user, order, parsed, wsFileCheck);
 
         messages.push(newMsg);
         saveMessagesToDisk();
@@ -4627,20 +5013,39 @@ function setupWebSocketHandlers(ws: WebSocket) {
 }
 
 // Vite middleware integration for development
-if (process.env.NODE_ENV !== 'production') {
-  const vite = await createViteServer({
-    server: { middlewareMode: true, hmr: false },
-    appType: 'spa',
+(async () => {
+  async function setupVite() {
+    if (process.env.NODE_ENV !== 'production') {
+      const vite = await createViteServer({
+        server: { middlewareMode: true, hmr: false },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } else {
+      app.use(express.static(path.join(__dirname, 'dist')));
+      app.get('*', (req, res) => {
+        res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+      });
+    }
+  }
+
+  await setupVite();
+
+  const PORT = process.env.PORT || 3000;
+  server.listen(Number(PORT), '0.0.0.0', () => {
+    console.log(`WorkPerHour server running on http://0.0.0.0:${PORT}`);
+    if (bootstrapAdminPasswordNotice) {
+      console.warn('[SECURITY] ADMIN_INITIAL_PASSWORD was not set. One-time generated super-admin password: ' + bootstrapAdminPasswordNotice + ' — change it after first login and set ADMIN_INITIAL_PASSWORD next time.');
+    }
   });
-  app.use(vite.middlewares);
-} else {
-  app.use(express.static(path.join(__dirname, 'dist')));
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-  });
+})();
+
+// Graceful shutdown
+async function gracefulShutdown(signal: string) {
+  console.log(`Received ${signal}. Flushing pending writes...`);
+  await Promise.all(writeQueue.values());
+  process.exit(0);
 }
 
-const PORT = process.env.PORT || 3000;
-server.listen(Number(PORT), '0.0.0.0', () => {
-  console.log(`WorkPerHour server running on http://0.0.0.0:${PORT}`);
-});
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));

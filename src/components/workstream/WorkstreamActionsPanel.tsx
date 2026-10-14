@@ -52,7 +52,7 @@ export const WorkstreamActionsPanel: React.FC<WorkstreamActionsPanelProps> = ({
           >
             <div className="flex items-center gap-2.5">
               <Video className="w-4 h-4 text-emerald-400 animate-pulse" />
-              <span>Start In-Browser Meeting</span>
+              <span>Open Local Camera Preview</span>
             </div>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
@@ -83,17 +83,32 @@ export const WorkstreamActionsPanel: React.FC<WorkstreamActionsPanelProps> = ({
             <span>Revision requested. Seller is updating deliverables.</span>
           </div>
         )}
-        {isBuyer && isCompleted && (
+        {isBuyer && isCompleted && !order.review && (
           <button
             onClick={onOpenReviewModal}
             className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl text-xs font-bold text-left flex items-center justify-between transition shadow-xs cursor-pointer"
           >
             <div className="flex items-center gap-2.5">
-              <Star className="w-4 h-4" />
+              <Star className="w-4 h-4 fill-white" />
               <span>Write a Review</span>
             </div>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
+        )}
+
+        {isCompleted && order.review && (
+          <div className="p-3.5 bg-amber-50/80 border border-amber-200 rounded-2xl text-xs space-y-1.5 animate-in fade-in">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1 font-bold text-amber-900">
+                <Star className="w-4 h-4 fill-amber-400 text-amber-400" />
+                <span>Review Submitted</span>
+              </div>
+              <span className="font-mono font-bold text-amber-800 text-[11px] bg-amber-100/70 px-2 py-0.5 rounded-full">
+                {order.review.rating}.0 / 5.0
+              </span>
+            </div>
+            <p className="text-[11px] text-amber-800 italic line-clamp-3">"{order.review.comment}"</p>
+          </div>
         )}
 
         {isBuyer && isDelivered && (

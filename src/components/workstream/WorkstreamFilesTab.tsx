@@ -1,6 +1,7 @@
 import React, { useRef } from 'react';
 import { FileText, Download, PlusCircle, FileCode, Image, FileArchive, ArrowUpRight, FolderOpen } from 'lucide-react';
 import { SharedFileItem } from './types';
+import { uploadWorkstreamFile } from '../../utils/workstreamUpload';
 
 interface WorkstreamFilesTabProps {
   files: SharedFileItem[];
@@ -19,28 +20,11 @@ export const WorkstreamFilesTab: React.FC<WorkstreamFilesTabProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const fallbackSizeStr = file.size > 1024 * 1024 
-      ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` 
-      : `${Math.round(file.size / 1024)} KB`;
-
     try {
-      const res = await fetch(`/api/workstream/upload?name=${encodeURIComponent(file.name)}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': file.type || 'application/octet-stream'
-        },
-        body: file
-      });
-      if (res.ok) {
-        const data = await res.json();
-        onUploadFile({
-          name: data.name || file.name,
-          size: data.size || fallbackSizeStr,
-          url: data.url
-        });
-      }
+      const result = await uploadWorkstreamFile(file);
+      onUploadFile(result);
     } catch (err) {
-      console.error('Workstream file upload failed:', err);
+      alert(err instanceof Error ? err.message : 'Upload failed');
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = '';
     }

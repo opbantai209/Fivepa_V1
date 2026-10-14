@@ -36,20 +36,18 @@ export const WorkstreamSidebar: React.FC<WorkstreamSidebarProps> = ({
 }) => {
   const filterCounts = {
     all: orders.length,
-    inbox: orders.filter(o => o.status === 'funded_in_escrow' || o.status === 'in_progress').length,
-    discussion: orders.filter(o => o.status === 'in_progress').length,
+    inbox: orders.filter(o => ['funded_in_escrow', 'in_progress', 'delivered', 'revision'].includes(o.status)).length,
     in_progress: orders.filter(o => o.status === 'in_progress').length,
     delivered: orders.filter(o => o.status === 'delivered').length,
     completed: orders.filter(o => o.status === 'completed').length,
     starred: starredCount,
-    escrow: orders.filter(o => o.amount > 0 && o.status !== 'cancelled').length,
-    archived: orders.filter(o => o.status === 'cancelled').length
+    escrow: orders.filter(o => o.amount > 0 && !['cancelled', 'completed'].includes(o.status)).length,
+    archived: orders.filter(o => ['cancelled', 'disputed'].includes(o.status)).length
   };
 
   const filterTabs: Array<{ id: WorkstreamFilter; label: string; icon: React.ReactNode; count: number }> = [
     { id: 'all', label: 'All Workstreams', icon: <Inbox className="w-3.5 h-3.5" />, count: filterCounts.all },
     { id: 'inbox', label: 'Active Inbox', icon: <MessageSquare className="w-3.5 h-3.5" />, count: filterCounts.inbox },
-    { id: 'discussion', label: 'In Discussion', icon: <Clock className="w-3.5 h-3.5" />, count: filterCounts.discussion },
     { id: 'in_progress', label: 'Work in Progress', icon: <Clock className="w-3.5 h-3.5 text-blue-500" />, count: filterCounts.in_progress },
     { id: 'delivered', label: 'Delivered', icon: <PackageCheck className="w-3.5 h-3.5 text-amber-500" />, count: filterCounts.delivered },
     { id: 'completed', label: 'Completed', icon: <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />, count: filterCounts.completed },

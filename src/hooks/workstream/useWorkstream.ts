@@ -68,7 +68,14 @@ export function useWorkstream(props?: any) {
     setMessages: activeSetMessages
   });
 
-  const review = useWorkstreamReview(props);
+  const review = useWorkstreamReview({
+    selectedOrder: currentSelectedOrder,
+    setOrders: props?.setOrders,
+    setSelectedOrder: props?.setSelectedOrder || selection.setSelectedOrder,
+    setMessages: activeSetMessages,
+    setReviews: props?.setReviews,
+    refresh: props?.refresh
+  });
   const meeting = useWorkstreamMeeting(props);
 
   return {

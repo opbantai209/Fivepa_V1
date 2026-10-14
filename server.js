@@ -24937,7 +24937,7 @@ var require_websocket = __commonJS({
     var http = __require("http");
     var net = __require("net");
     var tls = __require("tls");
-    var { randomBytes: randomBytes2, createHash } = __require("crypto");
+    var { randomBytes: randomBytes3, createHash } = __require("crypto");
     var { Duplex, Readable } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -25488,7 +25488,7 @@ var require_websocket = __commonJS({
         }
       }
       const defaultPort = isSecure ? 443 : 80;
-      const key = randomBytes2(16).toString("base64");
+      const key = randomBytes3(16).toString("base64");
       const request = isSecure ? https.request : http.request;
       const protocolSet = /* @__PURE__ */ new Set();
       let perMessageDeflate;
@@ -26720,7 +26720,7 @@ var import_dotenv = __toESM(require_main(), 1);
 import path2 from "path";
 import { fileURLToPath as fileURLToPath2 } from "url";
 import { createServer as createViteServer } from "vite";
-import { randomUUID as randomUUID2, timingSafeEqual, createHmac } from "crypto";
+import { randomUUID as randomUUID2, randomBytes as randomBytes2, timingSafeEqual, createHmac } from "crypto";
 
 // node_modules/bcryptjs/index.js
 import nodeCrypto from "crypto";
@@ -31338,9 +31338,17 @@ var IS_PROD = (isExplicitProd || isNpmStart || isCompiledProductionBundle) && !i
 if (IS_PROD) {
   process.env.NODE_ENV = "production";
 }
-var JWT_SECRET = "wph_jwt_secret_internal_session_token_key_2026";
+var IS_PRODUCTION = process.env.NODE_ENV === "production" || isCompiledProductionBundle;
+var JWT_SECRET = (() => {
+  const fromEnv = process.env.JWT_SECRET;
+  if (fromEnv && fromEnv.length >= 32) return fromEnv;
+  if (IS_PRODUCTION) {
+    throw new Error("JWT_SECRET environment variable (min 32 characters) is required in production.");
+  }
+  return "dev-only-insecure-jwt-secret-do-not-use-in-production";
+})();
 function areSimulatedDepositsAllowed() {
-  if (process.env.NODE_ENV === "production") {
+  if (IS_PRODUCTION) {
     return false;
   }
   return true;
@@ -31621,6 +31629,40 @@ async function handleLogin(req, res) {
     record.count++;
     loginAttempts.set(clientIp, record);
   }
+  function sanitizeAndCreateMessage2(sender, order, body, fileCheck) {
+    const text = typeof body.text === "string" ? body.text.trim() : "";
+    const isSystemOrStaff = isStaffUser(sender);
+    let type = body.type;
+    if (!isSystemOrStaff && (type === "system" || type === "deliverable")) {
+      type = "message";
+    }
+    if (type !== "message" && type !== "file") {
+      type = "message";
+    }
+    if (type !== "file" && !text) {
+      throw new Error("Message text is required.");
+    }
+    if (text.length > 5e3) {
+      throw new Error("Message is too long.");
+    }
+    const metadata = {};
+    if (body.metadata && typeof body.metadata === "object") {
+      if (body.metadata.clientMessageId) {
+        metadata.clientMessageId = String(body.metadata.clientMessageId);
+      }
+    }
+    return {
+      id: "msg_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+      orderId: order.id,
+      senderId: sender.id,
+      senderName: sender.name,
+      text: text.slice(0, 5e3),
+      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+      type,
+      fileInfo: fileCheck.fileInfo,
+      metadata
+    };
+  }
   const { email, password, userId, code, verificationCode, emailCode } = req.body || {};
   const lookupEmail = typeof email === "string" && email.trim() ? email.trim().toLowerCase() : null;
   const lookupId = typeof userId === "string" && userId.trim() ? userId.trim() : null;
@@ -31717,9 +31759,13 @@ app.get("/api/auth/me", (req, res) => {
   return res.json({ success: true, user: safeUser(u) });
 });
 app.post("/api/auth/demo-session", (req, res) => {
+  if (IS_PRODUCTION) return res.status(404).json({ error: "Not found." });
   const { userId } = req.body || {};
   const user = users.find((u) => u.id === userId);
   if (!user) return res.status(404).json({ error: "Demo user not found." });
+  if (["admin", "super_admin", "support"].includes(user.role)) {
+    return res.status(403).json({ error: "Demo login is not available for privileged accounts." });
+  }
   user.sessionVersion = (user.sessionVersion || 0) + 1;
   const token = signToken({ id: user.id, role: user.role, email: user.email, sessionVersion: user.sessionVersion });
   return res.json({ success: true, token, user: safeUser(user) });
@@ -31857,6 +31903,14 @@ function requireAuth(req, res, next) {
   req.authenticatedUser = u;
   next();
 }
+var STAFF_ROLES = ["admin", "super_admin", "support"];
+function isStaffUser(user) {
+  return !!user && STAFF_ROLES.includes(user.role);
+}
+function canAccessOrderWorkstream(user, order) {
+  if (!user || !order) return false;
+  return isStaffUser(user) || user.id === order.buyerId || user.id === order.sellerId;
+}
 function adminActor(req) {
   const authUserId = resolveAuthenticatedUserId(req);
   const u = authUserId ? users.find((user) => user.id === authUserId) : null;
@@ -31900,8 +31954,21 @@ app.use("/api/admin", (req, res, next) => {
   }
   return requireAdmin(req, res, next);
 });
+var rateBuckets = /* @__PURE__ */ new Map();
 function rateLimit(max, windowMs) {
   return (req, res, next) => {
+    const key = req.authenticatedUserId || req.ip;
+    const now = Date.now();
+    const record = rateBuckets.get(key) || { count: 0, resetAt: now + windowMs };
+    if (now > record.resetAt) {
+      record.count = 0;
+      record.resetAt = now + windowMs;
+    }
+    record.count++;
+    rateBuckets.set(key, record);
+    if (record.count > max) {
+      return res.status(429).json({ error: "Too many requests. Please try again later." });
+    }
     next();
   };
 }
@@ -31992,11 +32059,24 @@ If you have any questions or security concerns, please contact support immediate
     console.error("WS notify error:", err);
   }
 }
-var DEV_DEMO_PASSWORD_HASH = bcryptjs_default.hashSync("password123", 10);
-var DEV_ADMIN_PASSWORD_HASH = bcryptjs_default.hashSync("adminpassword123", 10);
+var randomPasswordHash = () => bcryptjs_default.hashSync(randomBytes2(24).toString("hex"), 10);
+var bootstrapAdminPasswordNotice = null;
+function seedPasswordHashFor(role) {
+  if (!IS_PRODUCTION) {
+    return bcryptjs_default.hashSync(role === "super_admin" ? "adminpassword123" : "password123", 10);
+  }
+  if (role === "super_admin") {
+    const configured = process.env.ADMIN_INITIAL_PASSWORD;
+    if (configured && configured.length >= 12) return bcryptjs_default.hashSync(configured, 10);
+    const generated = randomBytes2(18).toString("base64url");
+    bootstrapAdminPasswordNotice = generated;
+    return bcryptjs_default.hashSync(generated, 10);
+  }
+  return randomPasswordHash();
+}
 var users = SEED_USERS.map((u) => ({
   ...u,
-  password: u.role === "super_admin" ? DEV_ADMIN_PASSWORD_HASH : DEV_DEMO_PASSWORD_HASH,
+  password: seedPasswordHashFor(u.role),
   sessionVersion: u.sessionVersion || 1,
   knownDevices: u.knownDevices || ["dev_default_session"]
 }));
@@ -32152,33 +32232,47 @@ var DATA_DIR2 = path2.join(__dirname2, "data");
 var MESSAGES_FILE = path2.join(DATA_DIR2, "workstream_messages.json");
 var ORDERS_FILE = path2.join(DATA_DIR2, "workstream_orders.json");
 var REVIEWS_FILE = path2.join(DATA_DIR2, "workstream_reviews.json");
+var UPLOAD_INDEX_FILE = path2.join(DATA_DIR2, "workstream_uploads.json");
 function ensureDataDirectory() {
   if (!fs2.existsSync(DATA_DIR2)) {
     fs2.mkdirSync(DATA_DIR2, { recursive: true });
   }
 }
-function saveMessagesToDisk() {
-  try {
+var writeQueue = /* @__PURE__ */ new Map();
+async function writeJsonAtomic(filePath, data) {
+  const serialized = JSON.stringify(data, null, 2);
+  const tempPath = `${filePath}.tmp.${Math.random().toString(36).substring(7)}`;
+  const existingTask = writeQueue.get(filePath) || Promise.resolve();
+  const task = existingTask.then(async () => {
     ensureDataDirectory();
-    fs2.writeFileSync(MESSAGES_FILE, JSON.stringify(messages, null, 2), "utf-8");
-  } catch (err) {
-    console.error("Failed to save messages to disk:", err);
-  }
+    fs2.writeFileSync(tempPath, serialized, "utf-8");
+    fs2.renameSync(tempPath, filePath);
+  }).catch((err) => {
+    console.error(`Failed to atomic write ${filePath}:`, err);
+    if (fs2.existsSync(tempPath)) fs2.unlinkSync(tempPath);
+  });
+  writeQueue.set(filePath, task);
+  return task;
+}
+function saveMessagesToDisk() {
+  writeJsonAtomic(MESSAGES_FILE, messages);
 }
 function saveOrdersToDisk() {
-  try {
-    ensureDataDirectory();
-    fs2.writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2), "utf-8");
-  } catch (err) {
-    console.error("Failed to save orders to disk:", err);
-  }
+  writeJsonAtomic(ORDERS_FILE, orders);
 }
 function saveReviewsToDisk() {
-  try {
-    ensureDataDirectory();
-    fs2.writeFileSync(REVIEWS_FILE, JSON.stringify(reviews, null, 2), "utf-8");
-  } catch (err) {
-    console.error("Failed to save reviews to disk:", err);
+  writeJsonAtomic(REVIEWS_FILE, reviews);
+}
+function saveWorkstreamUploadIndex() {
+  writeJsonAtomic(UPLOAD_INDEX_FILE, uploadIndex);
+}
+function handleCorruption(filePath, error) {
+  console.error(`CRITICAL: Data corruption in ${filePath}:`, error);
+  if (process.env.ALLOW_EMPTY_DATA !== "true") {
+    const backupPath = `${filePath}.corrupt-${Date.now()}`;
+    fs2.renameSync(filePath, backupPath);
+    console.error(`Refusing to start. Broken file renamed to ${backupPath}. Set ALLOW_EMPTY_DATA=true to bypass.`);
+    process.exit(1);
   }
 }
 function loadInitialOrdersAndMessages() {
@@ -32187,11 +32281,11 @@ function loadInitialOrdersAndMessages() {
     try {
       const data = fs2.readFileSync(ORDERS_FILE, "utf-8");
       const parsed = JSON.parse(data);
-      if (Array.isArray(parsed)) {
+      if (Array.isArray(parsed) && parsed.length > 0) {
         orders = parsed;
       }
     } catch (e) {
-      console.error("Error reading orders file:", e);
+      handleCorruption(ORDERS_FILE, e);
     }
   }
   if (fs2.existsSync(MESSAGES_FILE)) {
@@ -32202,7 +32296,7 @@ function loadInitialOrdersAndMessages() {
         messages = parsed;
       }
     } catch (e) {
-      console.error("Error reading messages file:", e);
+      handleCorruption(MESSAGES_FILE, e);
     }
   }
   if (fs2.existsSync(REVIEWS_FILE)) {
@@ -32213,8 +32307,44 @@ function loadInitialOrdersAndMessages() {
         reviews = parsed;
       }
     } catch (e) {
-      console.error("Error reading reviews file:", e);
+      handleCorruption(REVIEWS_FILE, e);
     }
+  }
+  let messagesMigrated = false;
+  for (const msg of messages) {
+    if (!msg.timestamp || !/\d{4}-\d{2}-\d{2}/.test(msg.timestamp)) {
+      const order = orders.find((o) => o.id === msg.orderId);
+      let baseDate = order?.createdAt;
+      if (!baseDate || !/\d{4}-\d{2}-\d{2}/.test(baseDate)) {
+        baseDate = (/* @__PURE__ */ new Date()).toISOString();
+      }
+      const datePart = baseDate.split("T")[0];
+      const timeMatch = msg.timestamp ? msg.timestamp.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?/i) : null;
+      let hours = 0;
+      let minutes = 0;
+      let seconds = 0;
+      if (timeMatch) {
+        hours = parseInt(timeMatch[1], 10);
+        minutes = parseInt(timeMatch[2], 10);
+        seconds = timeMatch[3] ? parseInt(timeMatch[3], 10) : 0;
+        const ampm = timeMatch[4] ? timeMatch[4].toUpperCase() : "";
+        if (ampm === "PM" && hours < 12) hours += 12;
+        if (ampm === "AM" && hours === 12) hours = 0;
+      }
+      const d = /* @__PURE__ */ new Date(`${datePart}T00:00:00.000Z`);
+      if (!isNaN(d.getTime())) {
+        d.setUTCHours(hours, minutes, seconds, 0);
+        msg.timestamp = d.toISOString();
+        messagesMigrated = true;
+      } else {
+        msg.timestamp = (/* @__PURE__ */ new Date()).toISOString();
+        messagesMigrated = true;
+      }
+    }
+  }
+  if (messagesMigrated) {
+    saveMessagesToDisk();
+    console.log("Migrated legacy non-ISO message timestamps to ISO strings.");
   }
   for (const u of users) {
     const userReviews = reviews.filter((r) => r.targetUserId === u.id);
@@ -32239,6 +32369,8 @@ function enrichOrderWithServiceInfo(o, isAdmin = false) {
   const serviceUrl = o.serviceUrl || (gig && gigSlug ? `/${sellerUsername}/${gigSlug}` : project ? `/project/${project.slug}` : void 0);
   const serviceTitle = gig?.title || project?.title || o.serviceTitle || o.title;
   const serviceThumbnail = o.serviceThumbnail || gig?.image || "https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=800&h=500&fit=crop";
+  const orderMessages = messages.filter((m) => m.orderId === o.id);
+  const lastMsg = orderMessages.length > 0 ? [...orderMessages].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0] : void 0;
   const base = {
     ...o,
     gigId: o.gigId || gig?.id,
@@ -32249,6 +32381,8 @@ function enrichOrderWithServiceInfo(o, isAdmin = false) {
     serviceUrl,
     serviceTitle,
     serviceThumbnail,
+    lastMessage: lastMsg?.text,
+    lastMessageTime: lastMsg?.timestamp,
     isTimerPaused: Boolean(o.isTimerPaused)
   };
   if (!isAdmin) {
@@ -32732,12 +32866,19 @@ app.post("/api/orders/:id/deliverable", requireAuth, (req, res) => {
   }
   if (!order.deliverableFiles) order.deliverableFiles = [];
   if (!order.deliveryHistory) order.deliveryHistory = [];
-  const rawFiles = Array.isArray(req.body.files) && req.body.files.length > 0 ? req.body.files : [{ name: req.body.name || "deliverable_final.zip", size: req.body.size || "3.5 MB", url: req.body.url || "#" }];
-  const uploadedFiles = rawFiles.map((f, idx) => ({
+  const rawFiles = Array.isArray(req.body.files) && req.body.files.length > 0 ? req.body.files : req.body.name ? [{ name: req.body.name, size: req.body.size, url: req.body.url }] : [];
+  if (rawFiles.length === 0) {
+    return res.status(400).json({ error: "At least one uploaded deliverable file is required." });
+  }
+  const validation = validateStoredWorkstreamFiles(rawFiles, caller);
+  if (!validation.ok) {
+    return res.status(400).json({ error: validation.error });
+  }
+  const uploadedFiles = validation.files.map((f, idx) => ({
     id: "deliv_" + Date.now() + "_" + idx,
-    name: f.name || "deliverable_file.zip",
-    size: f.size || "1.0 MB",
-    url: f.url || "#",
+    name: f.name,
+    size: f.size,
+    url: f.url,
     uploadedAt: (/* @__PURE__ */ new Date()).toLocaleString([], { dateStyle: "short", timeStyle: "short" }),
     type: "deliverable"
   }));
@@ -32781,10 +32922,13 @@ app.post("/api/orders/:id/revision", requireAuth, (req, res) => {
   if (!isAdmin && order.buyerId !== authUserId) {
     return res.status(403).json({ error: "Forbidden: Only the order buyer or an administrator can request revisions." });
   }
-  if (order.status !== "delivered" && order.status !== "in_progress" && order.status !== "funded_in_escrow") {
-    return res.status(409).json({ error: `Cannot request revisions for an order in "${order.status}" status.` });
+  if (order.status !== "delivered") {
+    return res.status(409).json({ error: `Cannot request revisions for an order in "${order.status}" status (order must be delivered first).` });
   }
-  const reason = (req.body.reason || "Revisions requested on latest deliverable.").trim();
+  const reason = (req.body.reason || "").trim();
+  if (!reason) {
+    return res.status(400).json({ error: "A revision reason is required." });
+  }
   if (!order.revisions) order.revisions = [];
   const revisionEntry = {
     id: "rev_" + Date.now(),
@@ -32928,27 +33072,23 @@ app.post("/api/orders/:id/force-cancel", requireAdmin, (req, res) => {
     res.status(400).json({ error: err.message });
   }
 });
-app.post("/api/orders/:id/message", requireAuth, (req, res) => {
+app.post("/api/orders/:id/message", requireAuth, rateLimit(10, 6e4), (req, res) => {
   const order = orders.find((o) => o.id === req.params.id);
   if (!order) return res.status(404).json({ error: "Order not found" });
-  const userId = req.authenticatedUserId || "admin_user";
-  const user = users.find((u) => u.id === userId) || users[0];
+  const userId = req.authenticatedUserId;
+  const user = users.find((u) => u.id === userId);
+  if (!user) return res.status(401).json({ error: "User not found" });
+  if (!canAccessOrderWorkstream(user, order)) {
+    return res.status(403).json({ error: "Forbidden: You are not a participant of this Workstream." });
+  }
+  const fileCheck = validateMessageFileInfo(req.body.fileInfo, user);
+  if (!fileCheck.ok) return res.status(400).json({ error: fileCheck.error });
   const clientMessageId = typeof req.body.clientMessageId === "string" ? req.body.clientMessageId : void 0;
   if (clientMessageId) {
     const existing = messages.find((m) => m.orderId === order.id && m.metadata?.clientMessageId === clientMessageId);
     if (existing) return res.json({ success: true, message: existing, deduplicated: true });
   }
-  const newMsg = {
-    id: "msg_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
-    orderId: order.id,
-    senderId: user.id,
-    senderName: user.name,
-    text: req.body.text || "",
-    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-    type: req.body.type || "message",
-    fileInfo: req.body.fileInfo,
-    metadata: { ...req.body.metadata || {}, ...clientMessageId ? { clientMessageId } : {} }
-  };
+  const newMsg = sanitizeAndCreateMessage(user, order, req.body, fileCheck);
   messages.push(newMsg);
   saveMessagesToDisk();
   broadcastMessage(newMsg, order.id);
@@ -33189,9 +33329,8 @@ app.post("/api/payments/escrow/release", requireAuth, (req, res) => {
     if (activeDispute || order.status === "disputed") {
       return res.status(400).json({ error: "Cannot release escrow: Order is under active dispute. Resolve the dispute first." });
     }
-    const releasableStatuses = ["delivered", "in_progress", "revision", "funded_in_escrow"];
-    if (!releasableStatuses.includes(order.status)) {
-      return res.status(400).json({ error: `Cannot release escrow for order in "${order.status}" status.` });
+    if (order.status !== "delivered") {
+      return res.status(400).json({ error: "Cannot release escrow before deliverables have been submitted by the seller." });
     }
     const esc = financeLedger.getEscrow(order.id);
     if (!esc || esc.remaining <= 0 || esc.status === "released" || esc.status === "refunded") {
@@ -34098,40 +34237,75 @@ app.get("/api/users/:userId/reviews", (req, res) => {
   const userReviews = reviews.filter((r) => r.targetUserId === req.params.userId);
   res.json(userReviews);
 });
-app.post("/api/reviews", (req, res) => {
-  const authUserId = req.authenticatedUserId || resolveAuthenticatedUserId(req) || "admin_user";
-  const caller = users.find((u) => u.id === authUserId) || users[0];
+app.post("/api/reviews", requireAuth, (req, res) => {
+  const authUserId = req.authenticatedUserId;
+  const caller = users.find((u) => u.id === authUserId);
+  if (!caller) return res.status(401).json({ error: "Authentication required to submit a review" });
   const { orderId, targetUserId, rating, comment, orderTitle } = req.body;
-  if (!targetUserId) return res.status(400).json({ error: "Target user ID is required" });
-  const order = orderId ? orders.find((o) => o.id === orderId) : void 0;
+  if (!orderId) {
+    return res.status(400).json({ error: "Order ID is required" });
+  }
+  const numRating = Number(rating);
+  if (isNaN(numRating) || numRating < 1 || numRating > 5) {
+    return res.status(400).json({ error: "Rating must be an integer between 1 and 5 stars" });
+  }
+  if (!comment || typeof comment !== "string" || !comment.trim()) {
+    return res.status(400).json({ error: "Review comment cannot be empty" });
+  }
+  const order = orders.find((o) => o.id === orderId);
   if (!order) return res.status(404).json({ error: "Workstream order not found" });
+  if (!canAccessOrderWorkstream(caller, order)) {
+    return res.status(403).json({ error: "Forbidden: Only order participants can submit reviews." });
+  }
   if (order.status !== "completed") {
     return res.status(409).json({ error: `Reviews can only be submitted for completed Workstreams (current status: ${order.status}).` });
   }
-  if (reviews.some((r) => r.orderId === order.id && r.reviewerId === caller.id)) {
+  if (reviews.some((r) => r.orderId === order.id && r.reviewerId === caller.id) || order.review && order.review.reviewerId === caller.id) {
     return res.status(409).json({ error: "A review has already been submitted for this Workstream." });
   }
+  const resolvedTargetUserId = targetUserId || (caller.id === order.buyerId ? order.sellerId : order.buyerId);
   const newReview = {
     id: "rev_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
-    orderId: orderId || "ord_" + Date.now(),
+    orderId: order.id,
     reviewerId: caller.id,
     reviewerName: caller.name,
     reviewerAvatar: caller.avatar,
-    targetUserId,
-    rating: Math.min(5, Math.max(1, Number(rating) || 5)),
-    comment: (comment || "Excellent collaboration and great deliverables.").trim(),
-    orderTitle: orderTitle || "Workstream Milestone Deliverable",
+    targetUserId: resolvedTargetUserId,
+    rating: numRating,
+    comment: comment.trim(),
+    orderTitle: orderTitle || order.title || "Workstream Milestone Deliverable",
+    gigId: req.body.gigId || order.gigId,
+    projectId: req.body.projectId || order.projectId,
     createdAt: (/* @__PURE__ */ new Date()).toISOString().split("T")[0]
   };
   reviews.unshift(newReview);
   saveReviewsToDisk();
-  const targetUser = users.find((u) => u.id === targetUserId);
+  order.review = newReview;
+  saveOrdersToDisk();
+  const targetUser = users.find((u) => u.id === resolvedTargetUserId);
   if (targetUser) {
-    const userReviews = reviews.filter((r) => r.targetUserId === targetUserId);
+    const userReviews = reviews.filter((r) => r.targetUserId === resolvedTargetUserId);
     targetUser.reviewsCount = userReviews.length;
     targetUser.rating = Number((userReviews.reduce((sum, r) => sum + r.rating, 0) / userReviews.length).toFixed(1));
   }
-  res.status(201).json({ success: true, review: newReview });
+  const sysMsg = {
+    id: "msg_" + Date.now(),
+    orderId: order.id,
+    senderId: "system",
+    senderName: "WorkSphere Reviews",
+    text: `\u2B50 Review submitted by ${caller.name} (${newReview.rating}/5 stars): "${newReview.comment}"`,
+    timestamp: (/* @__PURE__ */ new Date()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    type: "system",
+    metadata: {
+      action: "review_submitted",
+      rating: newReview.rating,
+      comment: newReview.comment
+    }
+  };
+  messages.push(sysMsg);
+  saveMessagesToDisk();
+  broadcastMessage(sysMsg, order.id);
+  res.status(201).json({ success: true, review: newReview, order: enrichOrderWithServiceInfo(order) });
 });
 app.get("/api/support-tickets", requireAuth, (req, res) => {
   const authUserId = req.authenticatedUserId;
@@ -34184,33 +34358,170 @@ app.post("/api/support-tickets", requireAuth, (req, res) => {
     details: `User submitted support request: ${subject}`,
     timestamp: (/* @__PURE__ */ new Date()).toLocaleString()
   });
-  res.json(newTicket);
+  res.status(201).json({ success: true, ticket: newTicket, ...newTicket });
 });
 var WORKSTREAM_UPLOADS_DIR = path2.join(__dirname2, "data", "uploads", "workstream");
 if (!fs2.existsSync(WORKSTREAM_UPLOADS_DIR)) {
   fs2.mkdirSync(WORKSTREAM_UPLOADS_DIR, { recursive: true });
 }
-app.post("/api/workstream/upload", import_express.default.raw({ type: "*/*", limit: "50mb" }), (req, res) => {
+var WORKSTREAM_FILE_URL_PREFIX = "/api/workstream/files/";
+var WORKSTREAM_UPLOAD_INDEX_FILE = path2.join(DATA_DIR2, "workstream_uploads.json");
+var WORKSTREAM_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+var WORKSTREAM_ABANDONED_UPLOAD_TTL_MS = 24 * 3600 * 1e3;
+var WORKSTREAM_ALLOWED_EXTENSIONS = /* @__PURE__ */ new Set([
+  ".pdf",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".txt",
+  ".md",
+  ".csv",
+  ".json",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".ppt",
+  ".pptx",
+  ".zip",
+  ".rar",
+  ".7z",
+  ".mp4",
+  ".mov",
+  ".webm",
+  ".mp3",
+  ".wav",
+  ".fig",
+  ".psd",
+  ".ai",
+  ".sketch"
+]);
+var WORKSTREAM_INLINE_EXTENSIONS = /* @__PURE__ */ new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf"]);
+var workstreamUploadIndex = {};
+try {
+  if (fs2.existsSync(WORKSTREAM_UPLOAD_INDEX_FILE)) {
+    workstreamUploadIndex = JSON.parse(fs2.readFileSync(WORKSTREAM_UPLOAD_INDEX_FILE, "utf-8")) || {};
+  }
+} catch (err) {
+  console.error("Failed to load workstream upload index:", err);
+}
+function workstreamFilenameFromUrl(url) {
+  if (typeof url !== "string" || !url.startsWith(WORKSTREAM_FILE_URL_PREFIX)) return null;
+  const name = path2.basename(url.slice(WORKSTREAM_FILE_URL_PREFIX.length).split("?")[0]);
+  return name || null;
+}
+function workstreamFileReferencedBy(filename) {
+  const holders = [];
+  const matches = (u) => workstreamFilenameFromUrl(u) === filename;
+  for (const o of orders) {
+    const inOrder = Array.isArray(o.deliverableFiles) && o.deliverableFiles.some((f) => matches(f?.url)) || Array.isArray(o.deliveryHistory) && o.deliveryHistory.some((d) => Array.isArray(d.files) && d.files.some((f) => matches(f?.url))) || messages.some((m) => m.orderId === o.id && matches(m.fileInfo?.url));
+    if (inOrder) holders.push({ buyerId: o.buyerId, sellerId: o.sellerId });
+  }
+  return holders;
+}
+function canAccessWorkstreamFile(user, filename) {
+  if (!user) return false;
+  if (isStaffUser(user)) return true;
+  if (workstreamUploadIndex[filename]?.ownerId === user.id) return true;
+  return workstreamFileReferencedBy(filename).some((h) => h.buyerId === user.id || h.sellerId === user.id);
+}
+function validateMessageFileInfo(fileInfo, sender) {
+  if (fileInfo === void 0 || fileInfo === null) return { ok: true, fileInfo: void 0 };
+  if (typeof fileInfo !== "object") return { ok: false, error: "Invalid file attachment." };
+  const filename = workstreamFilenameFromUrl(fileInfo.url);
+  if (!filename || !fs2.existsSync(path2.join(WORKSTREAM_UPLOADS_DIR, filename))) {
+    return { ok: false, error: "Attachments must be uploaded files; placeholder or external URLs are not accepted." };
+  }
+  if (!isStaffUser(sender) && workstreamUploadIndex[filename]?.ownerId !== sender.id) {
+    return { ok: false, error: "You can only attach files that you uploaded." };
+  }
+  const bytes = fs2.statSync(path2.join(WORKSTREAM_UPLOADS_DIR, filename)).size;
+  const size = bytes > 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return {
+    ok: true,
+    fileInfo: {
+      name: typeof fileInfo.name === "string" && fileInfo.name.trim() ? fileInfo.name.trim().slice(0, 200) : filename,
+      size,
+      url: `${WORKSTREAM_FILE_URL_PREFIX}${filename}`,
+      ...typeof fileInfo.type === "string" ? { type: fileInfo.type.slice(0, 100) } : {}
+    }
+  };
+}
+function validateStoredWorkstreamFiles(raw, submitter) {
+  const out = [];
+  for (const f of raw) {
+    const filename = workstreamFilenameFromUrl(f?.url);
+    if (!filename) {
+      return { ok: false, error: "Deliverable files must be uploaded first; placeholder or external URLs are not accepted." };
+    }
+    if (!fs2.existsSync(path2.join(WORKSTREAM_UPLOADS_DIR, filename))) {
+      return { ok: false, error: `Uploaded file not found on server: ${filename}` };
+    }
+    if (submitter && !isStaffUser(submitter) && workstreamUploadIndex[filename]?.ownerId !== submitter.id) {
+      return { ok: false, error: "You can only deliver files that you uploaded." };
+    }
+    const bytes = fs2.statSync(path2.join(WORKSTREAM_UPLOADS_DIR, filename)).size;
+    const size = bytes > 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+    const parts = filename.split("_");
+    const fallbackName = parts.length > 2 ? parts.slice(2).join("_") : filename;
+    out.push({ name: typeof f?.name === "string" && f.name.trim() ? f.name.trim().slice(0, 200) : fallbackName, size, url: `${WORKSTREAM_FILE_URL_PREFIX}${filename}` });
+  }
+  return { ok: true, files: out };
+}
+function cleanupAbandonedWorkstreamUploads() {
+  const now = Date.now();
+  let changed = false;
+  for (const [filename, rec] of Object.entries(workstreamUploadIndex)) {
+    if (now - new Date(rec.createdAt).getTime() < WORKSTREAM_ABANDONED_UPLOAD_TTL_MS) continue;
+    if (workstreamFileReferencedBy(filename).length > 0) continue;
+    try {
+      fs2.unlinkSync(path2.join(WORKSTREAM_UPLOADS_DIR, filename));
+    } catch {
+    }
+    delete workstreamUploadIndex[filename];
+    changed = true;
+  }
+  if (changed) saveWorkstreamUploadIndex();
+}
+setTimeout(cleanupAbandonedWorkstreamUploads, 3e4).unref?.();
+setInterval(cleanupAbandonedWorkstreamUploads, 36e5).unref?.();
+app.post("/api/workstream/upload", requireAuth, rateLimit(5, 6e4), import_express.default.raw({ type: "*/*", limit: WORKSTREAM_MAX_UPLOAD_BYTES }), (req, res) => {
   try {
+    const caller = req.authenticatedUser;
     const rawName = req.query.name || "attachment";
-    const decodedName = decodeURIComponent(rawName);
+    let decodedName;
+    try {
+      decodedName = decodeURIComponent(rawName);
+    } catch {
+      decodedName = rawName;
+    }
     const safeBase = path2.basename(decodedName).replace(/[^a-zA-Z0-9._-]/g, "_") || "file";
-    const ext = path2.extname(safeBase);
-    const nameWithoutExt = path2.basename(safeBase, ext);
+    const ext = path2.extname(safeBase).toLowerCase();
+    if (!WORKSTREAM_ALLOWED_EXTENSIONS.has(ext)) {
+      return res.status(415).json({ error: `File type "${ext || "unknown"}" is not allowed.` });
+    }
+    const nameWithoutExt = path2.basename(safeBase, path2.extname(safeBase));
     const storedFilename = `${Date.now()}_${randomUUID2().slice(0, 8)}_${nameWithoutExt}${ext}`;
     const filePath = path2.join(WORKSTREAM_UPLOADS_DIR, storedFilename);
     const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || "");
     if (!buffer || buffer.length === 0) {
       return res.status(400).json({ error: "No file data received" });
     }
+    if (buffer.length > WORKSTREAM_MAX_UPLOAD_BYTES) {
+      return res.status(413).json({ error: "File is too large (25 MB maximum)." });
+    }
     fs2.writeFileSync(filePath, buffer);
+    workstreamUploadIndex[storedFilename] = { ownerId: caller.id, createdAt: (/* @__PURE__ */ new Date()).toISOString() };
+    saveWorkstreamUploadIndex();
     const bytes = buffer.length;
     const sizeStr = bytes > 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
     const mimeType = req.headers["content-type"] || "application/octet-stream";
     res.json({
       name: safeBase,
       size: sizeStr,
-      url: `/api/workstream/files/${storedFilename}`,
+      url: `${WORKSTREAM_FILE_URL_PREFIX}${storedFilename}`,
       type: mimeType
     });
   } catch (err) {
@@ -34218,56 +34529,53 @@ app.post("/api/workstream/upload", import_express.default.raw({ type: "*/*", lim
     res.status(500).json({ error: "Failed to save uploaded file" });
   }
 });
-app.get("/api/workstream/files/:filename", (req, res) => {
+app.get("/api/workstream/files/:filename", requireAuth, (req, res) => {
   const filename = path2.basename(req.params.filename);
   const filePath = path2.join(WORKSTREAM_UPLOADS_DIR, filename);
   if (!fs2.existsSync(filePath)) {
     return res.status(404).json({ error: "File not found" });
   }
+  if (!canAccessWorkstreamFile(req.authenticatedUser, filename)) {
+    return res.status(403).json({ error: "Forbidden: You do not have access to this file." });
+  }
   const parts = filename.split("_");
   const originalName = parts.length > 2 ? parts.slice(2).join("_") : filename;
-  if (req.query.download === "1") {
+  const ext = path2.extname(filename).toLowerCase();
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Cache-Control", "private, no-store");
+  if (req.query.download === "1" || !WORKSTREAM_INLINE_EXTENSIONS.has(ext)) {
     return res.download(filePath, originalName);
   }
   res.sendFile(filePath);
 });
-app.get("/api/messages/:orderId", (req, res) => {
+app.get("/api/messages/:orderId", requireAuth, (req, res) => {
+  const order = orders.find((o) => o.id === req.params.orderId);
+  if (!order) return res.status(404).json({ error: "Order not found" });
+  if (!canAccessOrderWorkstream(req.authenticatedUser, order)) {
+    return res.status(403).json({ error: "Forbidden: You are not a participant of this Workstream." });
+  }
   const filtered = messages.filter((m) => m.orderId === req.params.orderId);
   res.json(filtered);
 });
-app.post("/api/messages", (req, res) => {
-  const authUserId = req.authenticatedUserId || resolveAuthenticatedUserId(req) || "admin_user";
-  const caller = req.authenticatedUser || users.find((u) => u.id === authUserId) || users[0];
+app.post("/api/messages", requireAuth, (req, res) => {
+  const authUserId = req.authenticatedUserId;
+  const caller = users.find((u) => u.id === authUserId);
+  if (!caller) return res.status(401).json({ error: "User not found" });
   const orderId = req.body.orderId;
   if (!orderId) return res.status(400).json({ error: "Order ID is required" });
   let order = orders.find((o) => o.id === orderId);
-  if (!order) {
-    order = {
-      id: orderId,
-      title: req.body.orderTitle || "Workstream Collaboration",
-      buyerId: caller.id,
-      sellerId: req.body.recipientId || (caller.id === "admin_user" ? "admin_nikhil" : "admin_user"),
-      amount: Number(req.body.amount) || 100,
-      status: "in_progress",
-      createdAt: (/* @__PURE__ */ new Date()).toISOString().split("T")[0],
-      dueDate: new Date(Date.now() + 7 * 864e5).toISOString().split("T")[0],
-      requirements: "Agreed scope via workstream.",
-      feeBreakdown: financeLedger.quoteOrder(Number(req.body.amount) || 100)
-    };
-    orders.push(order);
-    saveOrdersToDisk();
-  }
   if (!order) return res.status(404).json({ error: "Order not found" });
-  const newMsg = {
-    id: "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
-    orderId,
-    senderId: caller.id,
-    senderName: caller.name,
-    text: req.body.text || "",
-    timestamp: (/* @__PURE__ */ new Date()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-    type: req.body.type || "message",
-    fileInfo: req.body.fileInfo
-  };
+  if (!canAccessOrderWorkstream(caller, order)) {
+    return res.status(403).json({ error: "Forbidden: You are not a participant of this Workstream." });
+  }
+  const fileCheck = validateMessageFileInfo(req.body.fileInfo, caller);
+  if (!fileCheck.ok) return res.status(400).json({ error: fileCheck.error });
+  const clientMessageId = typeof req.body.clientMessageId === "string" ? req.body.clientMessageId : void 0;
+  if (clientMessageId) {
+    const existing = messages.find((m) => m.orderId === orderId && m.metadata?.clientMessageId === clientMessageId);
+    if (existing) return res.json({ success: true, message: existing, deduplicated: true });
+  }
+  const newMsg = sanitizeAndCreateMessage(caller, order, req.body, fileCheck);
   messages.push(newMsg);
   saveMessagesToDisk();
   broadcastMessage(newMsg, order.id);
@@ -34840,13 +35148,9 @@ function broadcastMessage(message, orderId) {
   for (const client of clients) {
     if (client.readyState === import_websocket.default.OPEN) {
       const clientUserId = client.authenticatedUserId;
-      if (!clientUserId) {
-        client.send(payload);
-        client.send(updatePayload);
-        continue;
-      }
+      if (!clientUserId) continue;
       const clientUser = users.find((u) => u.id === clientUserId);
-      const isAuthorized = !order || clientUser && (["admin", "super_admin", "support"].includes(clientUser.role) || clientUserId === order.buyerId || clientUserId === order.sellerId);
+      const isAuthorized = !!order && canAccessOrderWorkstream(clientUser, order);
       if (isAuthorized) {
         client.send(payload);
         client.send(updatePayload);
@@ -34878,15 +35182,14 @@ wss.on("connection", (ws, req) => {
         if (dbUser && dbUser.status === "active") {
           matchedUserId = dbUser.id;
         }
-      } else {
-        const directUser = users.find((u) => u.id === token || u.username === token);
-        if (directUser && directUser.status === "active") {
-          matchedUserId = directUser.id;
-        }
       }
     }
     if (!matchedUserId) {
-      matchedUserId = "admin_user";
+      try {
+        ws.close(4401, "Authentication required");
+      } catch {
+      }
+      return;
     }
     ws.authenticatedUserId = matchedUserId;
     clients.add(ws);
@@ -34944,8 +35247,12 @@ function setupWebSocketHandlers(ws) {
         return;
       }
       if (parsed.type === "NEW_MESSAGE") {
-        const userId = ws.authenticatedUserId || "admin_user";
-        const user = users.find((u) => u.id === userId) || users[0];
+        const userId = ws.authenticatedUserId;
+        const user = users.find((u) => u.id === userId);
+        if (!user || user.status !== "active") {
+          ws.send(JSON.stringify({ error: "Authentication required" }));
+          return;
+        }
         const orderId = parsed.orderId;
         if (typeof orderId !== "string" || !orderId.trim()) {
           ws.send(JSON.stringify({ error: "Valid orderId is required" }));
@@ -34953,22 +35260,18 @@ function setupWebSocketHandlers(ws) {
         }
         let order = orders.find((o) => o.id === orderId.trim());
         if (!order) {
-          order = {
-            id: orderId.trim(),
-            title: parsed.orderTitle || "Workstream Collaboration",
-            buyerId: user.id,
-            sellerId: parsed.sellerId || (user.id === "admin_user" ? "admin_nikhil" : "admin_user"),
-            amount: Number(parsed.amount) || 100,
-            status: "in_progress",
-            createdAt: (/* @__PURE__ */ new Date()).toISOString().split("T")[0],
-            dueDate: new Date(Date.now() + 7 * 864e5).toISOString().split("T")[0],
-            requirements: parsed.requirements || "Agreed scope via workstream.",
-            feeBreakdown: financeLedger.quoteOrder(Number(parsed.amount) || 100)
-          };
-          orders.push(order);
-          saveOrdersToDisk();
+          ws.send(JSON.stringify({ error: "Order not found" }));
+          return;
         }
-        if (!order) return;
+        if (!canAccessOrderWorkstream(user, order)) {
+          ws.send(JSON.stringify({ error: "Forbidden: You are not a participant of this Workstream." }));
+          return;
+        }
+        const wsFileCheck = validateMessageFileInfo(parsed.fileInfo, user);
+        if (!wsFileCheck.ok) {
+          ws.send(JSON.stringify({ error: wsFileCheck.error }));
+          return;
+        }
         const text = parsed.text || "";
         const msgType = parsed.msgType || "message";
         const clientMessageId = typeof parsed.clientMessageId === "string" ? parsed.clientMessageId : void 0;
@@ -34979,17 +35282,7 @@ function setupWebSocketHandlers(ws) {
             return;
           }
         }
-        const newMsg = {
-          id: "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
-          orderId: order.id,
-          senderId: user.id,
-          senderName: user.name,
-          text: text.trim(),
-          timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-          type: msgType,
-          fileInfo: parsed.fileInfo,
-          metadata: { ...parsed.metadata || {}, ...clientMessageId ? { clientMessageId } : {} }
-        };
+        const newMsg = sanitizeAndCreateMessage(user, order, parsed, wsFileCheck);
         messages.push(newMsg);
         saveMessagesToDisk();
         broadcastMessage(newMsg, order.id);
@@ -35018,7 +35311,17 @@ if (process.env.NODE_ENV !== "production") {
 var PORT = process.env.PORT || 3e3;
 server.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`WorkPerHour server running on http://0.0.0.0:${PORT}`);
+  if (bootstrapAdminPasswordNotice) {
+    console.warn("[SECURITY] ADMIN_INITIAL_PASSWORD was not set. One-time generated super-admin password: " + bootstrapAdminPasswordNotice + " \u2014 change it after first login and set ADMIN_INITIAL_PASSWORD next time.");
+  }
 });
+async function gracefulShutdown(signal) {
+  console.log(`Received ${signal}. Flushing pending writes...`);
+  await Promise.all(writeQueue.values());
+  process.exit(0);
+}
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 /*! Bundled license information:
 
 depd/index.js:

@@ -574,12 +574,14 @@ export default function App() {
     sendMessage,
     isReviewModalOpen,
     setIsReviewModalOpen,
-    handleSubmitReview
+    handleSubmitReview,
+    reviewError,
+    isSubmittingReview
   } = useWorkstream({ 
     orders, usersList, gigs, messages, currentUser, impersonatedUser,
     workstreamTab, starredWorkstreams, selectedPersonFilter, projectFilterSearch, workstreamSearch,
     setOrders, setSelectedOrder, setIsStartWorkstreamModalOpen, navigate, financeLedger,
-    selectedOrder, setNewMessageText, setMessages
+    selectedOrder, setNewMessageText, setMessages, setReviews: setAppReviews, refresh
   });
 
   // Fetch initial data & restore user session
@@ -3154,6 +3156,7 @@ export default function App() {
                 </form>
               )}
 
+              {!import.meta.env.PROD && (
               <div className="pt-4 border-t border-slate-100">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-2 text-center">Instant Demo Account Login</span>
                 <div className="grid grid-cols-2 gap-2 text-xs">
@@ -3188,6 +3191,7 @@ export default function App() {
                   ))}
                 </div>
               </div>
+              )}
             </div>
           </div>
         )}
@@ -3665,6 +3669,8 @@ export default function App() {
                     isReviewModalOpen={isReviewModalOpen}
                     setIsReviewModalOpen={setIsReviewModalOpen}
                     handleSubmitReview={handleSubmitReview}
+                    reviewError={reviewError}
+                    isSubmittingReview={isSubmittingReview}
                     onViewPartnerProfile={(user) => navigate('/' + (user.username || slugify(user.name)))}
                     onDisputeAssistance={() => navigate('/admin')}
                   />

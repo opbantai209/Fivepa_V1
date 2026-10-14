@@ -41,7 +41,16 @@ export function useWorkstreamMessages() {
       setMessages(prev => {
         const otherMessages = prev.filter(m => m.orderId !== orderId);
         const combined = [...otherMessages, ...newOrderMessages];
-        return combined;
+        return combined.sort((a, b) => {
+          const tA = a.timestamp ? new Date(a.timestamp).getTime() : NaN;
+          const tB = b.timestamp ? new Date(b.timestamp).getTime() : NaN;
+          const validA = !isNaN(tA);
+          const validB = !isNaN(tB);
+          if (!validA && !validB) return 0;
+          if (!validA) return 1;
+          if (!validB) return -1;
+          return tA - tB;
+        });
       });
     } catch (err) {
       console.error('Error fetching messages:', err);
@@ -103,12 +112,75 @@ export function useWorkstreamMessages() {
     attemptSend();
   }, [setMessages, setNewMessageText]);
 
+  const sendEvent = useCallback(async (
+    orderId: string,
+    text: string,
+    type: 'system' = 'system',
+    metadata: Record<string, any>,
+    onError: (msg: string) => void
+  ) => {
+    const token = localStorage.getItem('workperhour_token') || localStorage.getItem('token');
+    const clientMessageId = 'evt_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
+
+    const tempMessage: Message = {
+      id: clientMessageId,
+      orderId,
+      senderId: 'current_user',
+      senderName: 'System',
+      text,
+      timestamp: new Date().toISOString(),
+      type,
+      status: 'sending',
+      metadata: { ...metadata, clientMessageId }
+    };
+
+    setMessages(prev => [...prev, tempMessage]);
+
+    const attemptSend = async (retries = 3): Promise<void> => {
+      try {
+        const res = await fetch(`/api/orders/${orderId}/message`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({
+            text,
+            type,
+            metadata: { ...metadata, clientMessageId }
+          })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          setMessages(prev => prev.map(m => m.id === clientMessageId ? { ...data.message, status: 'sent' } : m));
+        } else if (retries > 0) {
+          await attemptSend(retries - 1);
+        } else {
+          throw new Error('Failed after retries');
+        }
+      } catch (err) {
+        if (retries > 0) {
+          await attemptSend(retries - 1);
+        } else {
+          console.error('Event sending failed:', err);
+          setMessages(prev => prev.map(m => m.id === clientMessageId ? { ...m, status: 'failed' } : m));
+          onError(`Failed to log event: ${text}`);
+        }
+      }
+    };
+
+    attemptSend();
+  }, [setMessages]);
+
   return {
     messages,
     setMessages,
     newMessageText,
     setNewMessageText,
     fetchMessages,
-    sendMessage
+    sendMessage,
+    sendEvent
   };
 }
+

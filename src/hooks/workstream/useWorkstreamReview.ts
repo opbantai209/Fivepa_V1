@@ -1,24 +1,79 @@
 import { useState } from 'react';
-import { Order } from '../../types';
+import { Order, Message, Review } from '../../types';
 
 export interface UseWorkstreamReviewProps {
   selectedOrder?: Order | null;
-  setOrders: React.Dispatch<React.SetStateAction<Order[]>>;
-  setSelectedOrder: React.Dispatch<React.SetStateAction<Order | null>>;
+  setOrders?: React.Dispatch<React.SetStateAction<Order[]>>;
+  setSelectedOrder?: React.Dispatch<React.SetStateAction<Order | null>>;
+  setMessages?: React.Dispatch<React.SetStateAction<Message[]>>;
+  setReviews?: React.Dispatch<React.SetStateAction<Review[]>>;
+  refresh?: () => Promise<void>;
 }
 
 /**
- * Hook responsible for managing workstream review state and submission.
+ * Hook responsible for managing workstream review state, validation, and submission.
+ * Enforces server-authoritative review persistence, validation error capture,
+ * and duplicate-review prevention.
  */
 export function useWorkstreamReview({
   selectedOrder,
   setOrders,
-  setSelectedOrder
+  setSelectedOrder,
+  setMessages,
+  setReviews,
+  refresh
 }: UseWorkstreamReviewProps) {
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
 
-  const handleSubmitReview = async (review: { rating: number; comment: string; gigId?: string; projectId?: string }): Promise<boolean> => {
-    if (!selectedOrder) return false;
+  const openReviewModal = () => {
+    setReviewError(null);
+    setIsReviewModalOpen(true);
+  };
+
+  const closeReviewModal = () => {
+    setReviewError(null);
+    setIsReviewModalOpen(false);
+  };
+
+  const handleSubmitReview = async (review: {
+    rating: number;
+    comment: string;
+    gigId?: string;
+    projectId?: string;
+  }): Promise<boolean> => {
+    setReviewError(null);
+
+    if (!selectedOrder) {
+      setReviewError('No active Workstream order selected.');
+      return false;
+    }
+
+    // Verify completed-order eligibility
+    if (selectedOrder.status !== 'completed') {
+      setReviewError(`Reviews can only be submitted for completed Workstreams (current status: ${selectedOrder.status}).`);
+      return false;
+    }
+
+    // Verify duplicate-review prevention on client
+    if (selectedOrder.review) {
+      setReviewError('A review has already been submitted for this Workstream.');
+      return false;
+    }
+
+    // Client-side validation
+    if (!review.rating || review.rating < 1 || review.rating > 5) {
+      setReviewError('Please select a star rating between 1 and 5.');
+      return false;
+    }
+
+    if (!review.comment || !review.comment.trim()) {
+      setReviewError('Please provide a feedback comment for this review.');
+      return false;
+    }
+
+    setIsSubmittingReview(true);
     try {
       const token = localStorage.getItem('workperhour_token') || localStorage.getItem('token');
       const res = await fetch('/api/reviews', {
@@ -31,27 +86,75 @@ export function useWorkstreamReview({
           orderId: selectedOrder.id,
           targetUserId: selectedOrder.sellerId,
           rating: review.rating,
-          comment: review.comment,
+          comment: review.comment.trim(),
           orderTitle: selectedOrder.title,
-          gigId: review.gigId,
-          projectId: review.projectId
+          gigId: review.gigId || selectedOrder.gigId,
+          projectId: review.projectId || selectedOrder.projectId
         })
       });
-      if (res.ok) {
-        const data = await res.json();
-        const updatedOrder = { ...selectedOrder, review: data.review };
-        setOrders(prev => prev.map(o => o.id === selectedOrder.id ? updatedOrder : o));
-        setSelectedOrder(updatedOrder);
-        return true;
-      } else {
-        const err = await res.json().catch(() => ({}));
-        console.warn('Review submission warning:', err.error);
-        alert(err.error || 'Failed to submit review.');
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        const errorMsg = data.error || `Review submission failed (status ${res.status}).`;
+        setReviewError(errorMsg);
+        setIsSubmittingReview(false);
         return false;
       }
-    } catch (err) {
+
+      const createdReview = data.review || data;
+      const updatedOrder: Order = {
+        ...selectedOrder,
+        review: createdReview
+      };
+
+      if (setOrders) {
+        setOrders(prev => prev.map(o => o.id === selectedOrder.id ? updatedOrder : o));
+      }
+      if (setSelectedOrder) {
+        setSelectedOrder(updatedOrder);
+      }
+      
+      if (setReviews) {
+        setReviews(prev => [createdReview, ...prev]);
+      }
+      
+      if (refresh) {
+        await refresh();
+      }
+
+      // Add local review system message if setMessages provided
+      if (setMessages) {
+        const sysMsg: Message = {
+          id: `msg_review_${Date.now()}`,
+          orderId: selectedOrder.id,
+          senderId: 'system',
+          senderName: 'WorkSphere Reviews',
+          text: `⭐ Review submitted (${createdReview.rating}/5 stars): "${createdReview.comment}"`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          type: 'system',
+          metadata: {
+            action: 'review_submitted',
+            rating: createdReview.rating,
+            comment: createdReview.comment
+          }
+        };
+        setMessages(prev => {
+          if (prev.some(m => m.metadata?.action === 'review_submitted' && m.metadata?.comment === createdReview.comment)) {
+            return prev;
+          }
+          return [...prev, sysMsg];
+        });
+      }
+
+      setIsSubmittingReview(false);
+      setReviewError(null);
+      setIsReviewModalOpen(false);
+      return true;
+    } catch (err: any) {
       console.error('Failed to submit review:', err);
-      alert('Network error submitting review.');
+      setReviewError('A network error occurred while submitting your review. Please try again.');
+      setIsSubmittingReview(false);
       return false;
     }
   };
@@ -59,6 +162,11 @@ export function useWorkstreamReview({
   return {
     isReviewModalOpen,
     setIsReviewModalOpen,
+    openReviewModal,
+    closeReviewModal,
+    isSubmittingReview,
+    reviewError,
+    setReviewError,
     handleSubmitReview
   };
 }

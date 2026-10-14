@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { 
   ChevronLeft, ShieldCheck, Clock, CheckCircle2, AlertCircle, 
-  RotateCcw, Activity, FolderOpen, Send, Sparkles, MessageSquare, Video 
+  RotateCcw, Activity, FolderOpen, Send, Sparkles, MessageSquare, Video, Star 
 } from 'lucide-react';
 import { WorkstreamItem, WorkstreamMessage, SharedFileItem, WorkstreamSubTab } from './types';
 import { UserAccount } from '../../types';
@@ -26,7 +26,7 @@ interface WorkstreamWorkspaceProps {
   onBack: () => void;
   onSendMessage: (text: string) => void;
   onAttachFile: (file: { name: string; size: string; url: string }) => void;
-  onReleaseEscrow: (review: { rating: number; comment: string }) => void;
+  onReleaseEscrow: () => void | Promise<boolean>;
   onDeliverWork: (delivery: { notes: string; files: Array<{ name: string; size: string; url: string }> }) => void;
   onRequestRevision: (reason: string) => void;
   onViewPartnerProfile?: (user: UserAccount) => void;
@@ -36,6 +36,8 @@ interface WorkstreamWorkspaceProps {
   isReviewModalOpen: boolean;
   setIsReviewModalOpen: (open: boolean) => void;
   handleSubmitReview: (review: { rating: number; comment: string; gigId?: string; projectId?: string }) => Promise<boolean>;
+  reviewError?: string | null;
+  isSubmittingReview?: boolean;
 }
 
 export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
@@ -57,7 +59,9 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
   onMissedCall,
   isReviewModalOpen,
   setIsReviewModalOpen,
-  handleSubmitReview
+  handleSubmitReview,
+  reviewError,
+  isSubmittingReview
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<WorkstreamSubTab>('activity');
   const [isReleaseModalOpen, setIsReleaseModalOpen] = useState(false);
@@ -65,54 +69,60 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
   const [isRevisionModalOpen, setIsRevisionModalOpen] = useState(false);
   const [isVideoCallModalOpen, setIsVideoCallModalOpen] = useState(false);
 
+  const [errorInfo, setErrorInfo] = useState<{msg: string, retryAction: () => void} | null>(null);
+
   const handleLogRequirement = (reqText: string) => {
     if (onLogRequirement) onLogRequirement(reqText);
-    const token = localStorage.getItem('workperhour_token') || localStorage.getItem('token');
-    fetch(`/api/orders/${order.id}/message`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-      },
-      body: JSON.stringify({
-        text: `📋 Project Requirement Logged: "${reqText}"`,
-        type: 'system',
-        metadata: {
-          action: 'requirement_logged',
-          requirementText: reqText
-        }
-      })
-    }).catch(err => console.error('Failed to log requirement:', err));
+    const text = `📋 Project Requirement Logged: "${reqText}"`;
+    const metadata = { action: 'requirement_logged', requirementText: reqText };
+    
+    // @ts-ignore (sendEvent was just added to the hook, TS might not see it yet)
+    sendEvent(order.id, text, 'system', metadata, (msg: string) => {
+      setErrorInfo({ msg, retryAction: () => handleLogRequirement(reqText) });
+    });
   };
 
   const handleMissedCall = () => {
     if (onMissedCall) onMissedCall();
-    const token = localStorage.getItem('workperhour_token') || localStorage.getItem('token');
-    fetch(`/api/orders/${order.id}/message`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-      },
-      body: JSON.stringify({
-        text: `📞 Missed Video Meeting with ${partner?.name || 'collaborator'}`,
-        type: 'system',
-        metadata: {
-          action: 'missed_call'
-        }
-      })
-    }).catch(err => console.error('Failed to log missed call:', err));
+    const text = `📞 Missed Video Meeting with ${partner?.name || 'collaborator'}`;
+    const metadata = { action: 'missed_call' };
+    
+    // @ts-ignore
+    sendEvent(order.id, text, 'system', metadata, (msg: string) => {
+      setErrorInfo({ msg, retryAction: handleMissedCall });
+    });
   };
 
-  const handleDownloadFile = (f: { name: string; url: string }) => {
-    if (!f.url || f.url === '#') return;
-    const downloadUrl = f.url.includes('?') ? `${f.url}&download=1` : `${f.url}?download=1`;
-    const link = document.createElement('a');
-    link.href = downloadUrl;
-    link.download = f.name || 'download';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+
+  const handleDownloadFile = async (f: { name: string; url: string }) => {
+    if (!f.url || f.url === '#') {
+      alert(`"${f.name || 'This file'}" is unavailable: it has no valid download link.`);
+      return;
+    }
+    // Files are access-controlled, so fetch with the session token and save the blob.
+    try {
+      const token = localStorage.getItem('workperhour_token') || localStorage.getItem('token');
+      const downloadUrl = f.url.includes('?') ? `${f.url}&download=1` : `${f.url}?download=1`;
+      const res = await fetch(downloadUrl, { headers: token ? { 'Authorization': `Bearer ${token}` } : {} });
+      if (!res.ok) {
+        alert(res.status === 403
+          ? 'You do not have access to this file.'
+          : `"${f.name || 'This file'}" could not be downloaded (it may no longer be available).`);
+        return;
+      }
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = f.name || 'download';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 10_000);
+    } catch (err) {
+      console.error('File download failed:', err);
+      alert('Network error downloading the file. Please try again.');
+    }
   };
 
   const getStatusBadge = () => {
@@ -150,8 +160,24 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
 
   return (
     <div className="space-y-6">
+      {errorInfo && (
+        <div className="bg-rose-50 border border-rose-200 text-rose-800 px-4 py-3 rounded-2xl flex items-center justify-between text-xs">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4" />
+            <span className="font-medium">{errorInfo.msg}</span>
+          </div>
+          <button 
+            onClick={() => { errorInfo.retryAction(); setErrorInfo(null); }}
+            className="px-3 py-1 bg-rose-200 hover:bg-rose-300 text-rose-900 rounded-lg font-bold transition cursor-pointer"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
       {/* WORKSTREAM HEADER */}
       <div className="bg-white border border-slate-200 rounded-3xl p-5 sm:p-6 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+
         <div className="flex items-center gap-3">
           <button
             onClick={onBack}
@@ -181,6 +207,16 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
             >
               <ShieldCheck className="w-4 h-4" />
               <span>Release Escrow</span>
+            </button>
+          )}
+
+          {currentUser?.id === order.buyerId && order.status === 'completed' && !order.review && (
+            <button
+              onClick={() => setIsReviewModalOpen(true)}
+              className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-xs transition cursor-pointer"
+            >
+              <Star className="w-4 h-4 fill-white" />
+              <span>Write a Review</span>
             </button>
           )}
 
@@ -307,7 +343,7 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
         isOpen={isReleaseModalOpen}
         order={order}
         onClose={() => setIsReleaseModalOpen(false)}
-        onConfirm={onReleaseEscrow}
+        onConfirm={async () => { await onReleaseEscrow(); }}
       />
 
       <WorkstreamDeliverModal
@@ -332,6 +368,8 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
         order={order}
         onClose={() => setIsReviewModalOpen(false)}
         onSubmitReview={handleSubmitReview}
+        error={reviewError}
+        isSubmitting={isSubmittingReview}
       />
     </div>
   );

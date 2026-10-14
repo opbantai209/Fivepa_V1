@@ -6,3 +6,9 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# runtime data / uploads / test snapshot
+data/uploads/
+data/workstream_uploads.json
+.test-data-snapshot/
+server.build-stamp.json

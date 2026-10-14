@@ -23,8 +23,9 @@ export function useWorkstreamRealtime({
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
-    const activeUser = impersonatedUser || currentUser;
-    const token = localStorage.getItem('workperhour_token') || localStorage.getItem('token') || activeUser?.id || 'admin_user';
+    // Authenticate with the signed session token only. Never fall back to a user ID or an admin identity.
+    const token = localStorage.getItem('workperhour_token') || localStorage.getItem('token');
+    if (!token) return;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}?token=${encodeURIComponent(token)}`;
 
@@ -76,7 +77,8 @@ export function useWorkstreamRealtime({
         console.warn('WebSocket error encountered:', err);
       };
 
-      socket.onclose = () => {
+      socket.onclose = (ev) => {
+        if (ev.code === 4401) return; // rejected as unauthenticated: do not retry with the same credentials
         console.log('Workstream WebSocket disconnected, scheduling reconnect...');
         if (!isUnmounted) {
           reconnectTimeout = setTimeout(connect, 3000);

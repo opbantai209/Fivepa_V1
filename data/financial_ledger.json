@@ -1450,6 +1450,348 @@
         "lastActivityAt": "2026-10-13 21:35:56",
         "createdAt": "2026-10-13 21:35:56"
       }
+    ],
+    [
+      "usr_2",
+      {
+        "id": "WAL-USR_2",
+        "userId": "usr_2",
+        "userName": "Elena Rostova",
+        "userEmail": "elena.rostova@example.com",
+        "userRole": "freelancer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
+    ],
+    [
+      "usr_3",
+      {
+        "id": "WAL-USR_3",
+        "userId": "usr_3",
+        "userName": "Marcus Vance",
+        "userEmail": "marcus.v@innovatetech.io",
+        "userRole": "buyer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
+    ],
+    [
+      "usr_4",
+      {
+        "id": "WAL-USR_4",
+        "userId": "usr_4",
+        "userName": "Aisha Patel",
+        "userEmail": "aisha.design@studio.com",
+        "userRole": "freelancer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
+    ],
+    [
+      "usr_5",
+      {
+        "id": "WAL-USR_5",
+        "userId": "usr_5",
+        "userName": "David Kim",
+        "userEmail": "david.kim@appworks.dev",
+        "userRole": "freelancer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
+    ],
+    [
+      "usr_6",
+      {
+        "id": "WAL-USR_6",
+        "userId": "usr_6",
+        "userName": "Sarah Jenkins",
+        "userEmail": "sarah.j@growthsurge.co",
+        "userRole": "buyer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
+    ],
+    [
+      "usr_7",
+      {
+        "id": "WAL-USR_7",
+        "userId": "usr_7",
+        "userName": "Carlos Mendez",
+        "userEmail": "carlos.mendez@seometrics.com",
+        "userRole": "freelancer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
+    ],
+    [
+      "usr_8",
+      {
+        "id": "WAL-USR_8",
+        "userId": "usr_8",
+        "userName": "Emily Watson",
+        "userEmail": "emily.w@wordcraft.io",
+        "userRole": "freelancer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
+    ],
+    [
+      "usr_9",
+      {
+        "id": "WAL-USR_9",
+        "userId": "usr_9",
+        "userName": "Liam O’Connor",
+        "userEmail": "liam.oconnor@cloudscale.net",
+        "userRole": "freelancer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
+    ],
+    [
+      "usr_10",
+      {
+        "id": "WAL-USR_10",
+        "userId": "usr_10",
+        "userName": "Sophia Chen",
+        "userEmail": "sophia.chen@mindai.tech",
+        "userRole": "freelancer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
+    ],
+    [
+      "usr_11",
+      {
+        "id": "WAL-USR_11",
+        "userId": "usr_11",
+        "userName": "James Wilson",
+        "userEmail": "james@apexventures.co",
+        "userRole": "buyer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
+    ],
+    [
+      "usr_12",
+      {
+        "id": "WAL-USR_12",
+        "userId": "usr_12",
+        "userName": "Olivia Martinez",
+        "userEmail": "olivia.m@vividframe.tv",
+        "userRole": "freelancer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
+    ],
+    [
+      "usr_13",
+      {
+        "id": "WAL-USR_13",
+        "userId": "usr_13",
+        "userName": "Alexander Wright",
+        "userEmail": "alex.wright@securesolutions.io",
+        "userRole": "freelancer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
+    ],
+    [
+      "usr_14",
+      {
+        "id": "WAL-USR_14",
+        "userId": "usr_14",
+        "userName": "Hannah Taylor",
+        "userEmail": "hannah@studiobloom.design",
+        "userRole": "freelancer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
+    ],
+    [
+      "usr_15",
+      {
+        "id": "WAL-USR_15",
+        "userId": "usr_15",
+        "userName": "Robert Miller",
+        "userEmail": "robert@nexusretail.com",
+        "userRole": "buyer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
+    ],
+    [
+      "usr_16",
+      {
+        "id": "WAL-USR_16",
+        "userId": "usr_16",
+        "userName": "Nathaniel Cole",
+        "userEmail": "nathan.c@renderlab.3d",
+        "userRole": "freelancer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
+    ],
+    [
+      "usr_17",
+      {
+        "id": "WAL-USR_17",
+        "userId": "usr_17",
+        "userName": "Victoria Zhang",
+        "userEmail": "victoria.z@globaltranslate.org",
+        "userRole": "freelancer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
+    ],
+    [
+      "usr_18",
+      {
+        "id": "WAL-USR_18",
+        "userId": "usr_18",
+        "userName": "Benjamin Brooks",
+        "userEmail": "ben.brooks@soundscape.studio",
+        "userRole": "freelancer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
+    ],
+    [
+      "usr_19",
+      {
+        "id": "WAL-USR_19",
+        "userId": "usr_19",
+        "userName": "Rachel Adams",
+        "userEmail": "rachel@summitagency.com",
+        "userRole": "buyer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
+    ],
+    [
+      "usr_20",
+      {
+        "id": "WAL-USR_20",
+        "userId": "usr_20",
+        "userName": "Daniel Foster",
+        "userEmail": "daniel.foster@legaltech.law",
+        "userRole": "freelancer",
+        "currency": "USD",
+        "availableBalance": 0,
+        "pendingIncoming": 0,
+        "fundsOnHold": 0,
+        "pendingWithdrawals": 0,
+        "status": "active",
+        "lastActivityAt": "2026-10-14 05:08:02",
+        "createdAt": "2026-10-14 05:08:02"
+      }
     ]
   ],
   "auditLogs": [
@@ -1765,10 +2107,10 @@
   "payouts": [],
   "opResults": [],
   "config": {
-    "platformCommissionRate": 50,
-    "buyerFeePercent": 10,
-    "smallOrderFee": 5,
-    "smallOrderThreshold": 100,
+    "platformCommissionRate": 20,
+    "buyerFeePercent": 5.5,
+    "smallOrderFee": 3.5,
+    "smallOrderThreshold": 200,
     "refundClientFeesOnFullRefund": true,
     "minimumOrderAmount": 10,
     "minimumWithdrawalAmount": 50,

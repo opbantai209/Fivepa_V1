@@ -8,6 +8,7 @@ export interface GigExtra {
 
 export interface Review {
   id: string;
+  reviewerId?: string;
   targetUserId?: string;
   orderId?: string;
   reviewerName?: string;
@@ -142,6 +143,7 @@ export interface Order {
     deliveredAt: string;
   }>;
   deliveryNotes?: string;
+  review?: Review;
 }
 
 export interface UserAccount {
@@ -304,6 +306,7 @@ export interface Message {
     notes?: string;
     reason?: string;
     rating?: number;
+    comment?: string;
     revisionId?: string;
     deliveryVersion?: number;
     requirementText?: string;
