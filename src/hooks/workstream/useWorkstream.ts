@@ -77,6 +77,7 @@ export function useWorkstream(props?: any) {
     ...revision,
     ...escrow,
     ...review,
-    ...meeting
+    ...meeting,
+    sendMessage: () => {}
   };
 }

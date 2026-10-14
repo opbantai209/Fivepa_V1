@@ -980,6 +980,7 @@ interface Message {
     revisionId?: string;
     deliveryVersion?: number;
     requirementText?: string;
+    clientMessageId?: string;
   };
 }
 
@@ -2189,18 +2190,26 @@ app.post('/api/orders/:id/message', requireAuth, (req, res) => {
   const userId = (req as any).authenticatedUserId || 'admin_user';
   const user = users.find(u => u.id === userId) || users[0];
 
+  const clientMessageId = typeof req.body.clientMessageId === 'string' ? req.body.clientMessageId : undefined;
+  if (clientMessageId) {
+    const existing = messages.find(m => m.orderId === order.id && m.metadata?.clientMessageId === clientMessageId);
+    if (existing) return res.json({ success: true, message: existing, deduplicated: true });
+  }
+
   const newMsg: Message = {
-    id: 'msg_' + Date.now(),
+    id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
     orderId: order.id,
     senderId: user.id,
     senderName: user.name,
-    text: req.body.text,
-    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    text: req.body.text || '',
+    timestamp: new Date().toISOString(),
+    type: req.body.type || 'message',
+    fileInfo: req.body.fileInfo,
+    metadata: { ...(req.body.metadata || {}), ...(clientMessageId ? { clientMessageId } : {}) }
   };
 
   messages.push(newMsg);
-
-  // Broadcast WebSocket
+  saveMessagesToDisk();
   broadcastMessage(newMsg, order.id);
 
   res.json({ success: true, message: newMsg });
@@ -3572,6 +3581,15 @@ app.post('/api/reviews', (req, res) => {
   const { orderId, targetUserId, rating, comment, orderTitle } = req.body;
   if (!targetUserId) return res.status(400).json({ error: 'Target user ID is required' });
 
+  const order = orderId ? orders.find(o => o.id === orderId) : undefined;
+  if (!order) return res.status(404).json({ error: 'Workstream order not found' });
+  if (order.status !== 'completed') {
+    return res.status(409).json({ error: `Reviews can only be submitted for completed Workstreams (current status: ${order.status}).` });
+  }
+  if (reviews.some(r => r.orderId === order.id && r.reviewerId === caller.id)) {
+    return res.status(409).json({ error: 'A review has already been submitted for this Workstream.' });
+  }
+
   const newReview: Review = {
     id: 'rev_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
     orderId: orderId || ('ord_' + Date.now()),
@@ -4597,6 +4615,14 @@ function setupWebSocketHandlers(ws: WebSocket) {
 
         const text = parsed.text || '';
         const msgType = parsed.msgType || 'message';
+        const clientMessageId = typeof parsed.clientMessageId === 'string' ? parsed.clientMessageId : undefined;
+        if (clientMessageId) {
+          const existing = messages.find(m => m.orderId === order.id && m.metadata?.clientMessageId === clientMessageId);
+          if (existing) {
+            ws.send(JSON.stringify({ type: 'MESSAGE_ACK', clientMessageId, message: existing }));
+            return;
+          }
+        }
 
         const newMsg: Message = {
           id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
@@ -4604,15 +4630,16 @@ function setupWebSocketHandlers(ws: WebSocket) {
           senderId: user.id,
           senderName: user.name,
           text: text.trim(),
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          timestamp: new Date().toISOString(),
           type: msgType,
           fileInfo: parsed.fileInfo,
-          metadata: parsed.metadata
+          metadata: { ...(parsed.metadata || {}), ...(clientMessageId ? { clientMessageId } : {}) }
         };
 
         messages.push(newMsg);
         saveMessagesToDisk();
         broadcastMessage(newMsg, order.id);
+        ws.send(JSON.stringify({ type: 'MESSAGE_ACK', clientMessageId, message: newMsg }));
       }
     } catch (e) {
       console.error('WS message processing error:', e);

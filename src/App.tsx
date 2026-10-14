@@ -191,19 +191,7 @@ export default function App() {
 
 
 
-  const activeSharedFiles: SharedFileItem[] = useMemo(() => {
-    if (!selectedOrder) return [];
-    return messages
-      .filter(m => m.orderId === selectedOrder.id && (m.type === 'file' || m.fileInfo))
-      .map(m => ({
-        id: m.id,
-        name: m.fileInfo?.name || 'attachment.pdf',
-        size: m.fileInfo?.size || '1.0 MB',
-        url: m.fileInfo?.url || '#',
-        uploadedAt: m.timestamp,
-        uploadedBy: m.senderName
-      }));
-  }, [selectedOrder, messages]);
+
 
 
 
@@ -574,6 +562,7 @@ export default function App() {
     setSelectedOrder: hookSetSelectedOrder, 
     messages: hookMessages, 
     setMessages: hookSetMessages,
+    activeSharedFiles: hookActiveSharedFiles,
     newMessageText: hookNewMessageText, 
     setNewMessageText: hookSetNewMessageText, 
     fetchMessages,
@@ -581,12 +570,13 @@ export default function App() {
     handleDeliverWork,
     handleRequestRevision,
     handleStartWorkstreamModalSubmit,
-    wsRef
+    wsRef,
+    sendMessage
   } = useWorkstream({ 
     orders, usersList, gigs, messages, currentUser, impersonatedUser,
     workstreamTab, starredWorkstreams, selectedPersonFilter, projectFilterSearch, workstreamSearch,
     setOrders, setSelectedOrder, setIsStartWorkstreamModalOpen, navigate, financeLedger,
-    selectedOrder, setNewMessageText
+    selectedOrder, setNewMessageText, setMessages
   });
 
   // Fetch initial data & restore user session
@@ -605,94 +595,6 @@ export default function App() {
         fetchAllAdminData();
     }
   }, []);
-
-  // Real-time Workstream WebSocket Connection & Live Broadcasting
-  useEffect(() => {
-    let socket: WebSocket | null = null;
-    let reconnectTimeout: any = null;
-    let isUnmounted = false;
-
-    const connectWebSocket = () => {
-      if (isUnmounted) return;
-      try {
-        const token = localStorage.getItem('workperhour_token') || localStorage.getItem('token') || (impersonatedUser ? impersonatedUser.id : (currentUser ? currentUser.id : 'admin_user'));
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}?token=${encodeURIComponent(token || 'admin_user')}`;
-        
-        socket = new WebSocket(wsUrl);
-        wsRef.current = socket;
-
-        socket.onopen = () => {
-          console.log('📡 Real-time Workstream WebSocket connected successfully');
-        };
-
-        socket.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            if (data.type === 'MESSAGE_RECEIVED' && data.message) {
-              const incomingMsg = data.message;
-              
-              // 1. Update active conversation messages without duplicates
-              setMessages(prev => {
-                const alreadyExists = prev.some(m => m.id === incomingMsg.id);
-                if (alreadyExists) return prev;
-                return [...prev, incomingMsg];
-              });
-
-              // 2. Dynamically update orders last message preview in list
-              setOrders(prev => prev.map(o => {
-                if (o.id === incomingMsg.orderId) {
-                  return {
-                    ...o,
-                    lastMessage: incomingMsg.text,
-                    lastMessageTime: incomingMsg.timestamp
-                  };
-                }
-                return o;
-              }));
-            } else if (data.type === 'WORKSTREAM_UPDATED') {
-              setOrders(prev => prev.map(o => {
-                if (o.id === data.orderId) {
-                  return {
-                    ...o,
-                    lastMessage: data.lastMessage,
-                    lastMessageTime: data.lastMessageTime
-                  };
-                }
-                return o;
-              }));
-            }
-          } catch (e) {
-            console.error('Error handling WebSocket message:', e);
-          }
-        };
-
-        socket.onerror = () => {
-          // Soft error handling, will retry on close
-        };
-
-        socket.onclose = () => {
-          if (!isUnmounted) {
-            reconnectTimeout = setTimeout(connectWebSocket, 3000);
-          }
-        };
-      } catch (err) {
-        if (!isUnmounted) {
-          reconnectTimeout = setTimeout(connectWebSocket, 3000);
-        }
-      }
-    };
-
-    connectWebSocket();
-
-    return () => {
-      isUnmounted = true;
-      if (reconnectTimeout) clearTimeout(reconnectTimeout);
-      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
-        socket.close();
-      }
-    };
-  }, [currentUser?.id, impersonatedUser?.id]);
 
   // Keep messages in sync whenever selected order changes
   useEffect(() => {
@@ -3692,7 +3594,7 @@ export default function App() {
                   <WorkstreamWorkspace
                     order={activeWsOrder}
                     messages={messages.filter(m => m.orderId === activeWsOrder.id)}
-                    files={activeSharedFiles}
+                    files={hookActiveSharedFiles}
                     currentUser={impersonatedUser || currentUser}
                     usersList={usersList}
                     partner={partnerUser}

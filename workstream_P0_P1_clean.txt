@@ -1,0 +1,922 @@
+--- server.js
++++ server.js
+@@ -32933,15 +32933,24 @@
+   if (!order) return res.status(404).json({ error: "Order not found" });
+   const userId = req.authenticatedUserId || "admin_user";
+   const user = users.find((u) => u.id === userId) || users[0];
++  const clientMessageId = typeof req.body.clientMessageId === "string" ? req.body.clientMessageId : void 0;
++  if (clientMessageId) {
++    const existing = messages.find((m) => m.orderId === order.id && m.metadata?.clientMessageId === clientMessageId);
++    if (existing) return res.json({ success: true, message: existing, deduplicated: true });
++  }
+   const newMsg = {
+-    id: "msg_" + Date.now(),
++    id: "msg_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+     orderId: order.id,
+     senderId: user.id,
+     senderName: user.name,
+-    text: req.body.text,
+-    timestamp: (/* @__PURE__ */ new Date()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
++    text: req.body.text || "",
++    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
++    type: req.body.type || "message",
++    fileInfo: req.body.fileInfo,
++    metadata: { ...req.body.metadata || {}, ...(clientMessageId ? { clientMessageId } : {}) }
+   };
+   messages.push(newMsg);
++  saveMessagesToDisk();
+   broadcastMessage(newMsg, order.id);
+   res.json({ success: true, message: newMsg });
+ });
+@@ -34241,15 +34250,21 @@
+     saveOrdersToDisk();
+   }
+   if (!order) return res.status(404).json({ error: "Order not found" });
++  const clientMessageId = typeof req.body.clientMessageId === "string" ? req.body.clientMessageId : void 0;
++  if (clientMessageId) {
++    const existing = messages.find((m) => m.orderId === orderId && m.metadata?.clientMessageId === clientMessageId);
++    if (existing) return res.json(existing);
++  }
+   const newMsg = {
+     id: "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+     orderId,
+     senderId: caller.id,
+     senderName: caller.name,
+     text: req.body.text || "",
+-    timestamp: (/* @__PURE__ */ new Date()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
++    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+     type: req.body.type || "message",
+-    fileInfo: req.body.fileInfo
++    fileInfo: req.body.fileInfo,
++    metadata: { ...req.body.metadata || {}, ...(clientMessageId ? { clientMessageId } : {}) }
+   };
+   messages.push(newMsg);
+   saveMessagesToDisk();
+@@ -34954,6 +34969,14 @@
+         if (!order) return;
+         const text = parsed.text || "";
+         const msgType = parsed.msgType || "message";
++        const clientMessageId = typeof parsed.clientMessageId === "string" ? parsed.clientMessageId : void 0;
++        if (clientMessageId) {
++          const existing = messages.find((m) => m.orderId === order.id && m.metadata?.clientMessageId === clientMessageId);
++          if (existing) {
++            ws.send(JSON.stringify({ type: "MESSAGE_ACK", clientMessageId, message: existing }));
++            return;
++          }
++        }
+         const newMsg = {
+           id: "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+           orderId: order.id,
+@@ -34963,11 +34986,12 @@
+           timestamp: (/* @__PURE__ */ new Date()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+           type: msgType,
+           fileInfo: parsed.fileInfo,
+-          metadata: parsed.metadata
++          metadata: { ...parsed.metadata || {}, ...(clientMessageId ? { clientMessageId } : {}) }
+         };
+         messages.push(newMsg);
+         saveMessagesToDisk();
+         broadcastMessage(newMsg, order.id);
++        ws.send(JSON.stringify({ type: "MESSAGE_ACK", clientMessageId, message: newMsg }));
+       }
+     } catch (e) {
+       console.error("WS message processing error:", e);
+--- server.ts
++++ server.ts
+@@ -980,6 +980,7 @@
+     revisionId?: string;
+     deliveryVersion?: number;
+     requirementText?: string;
++    clientMessageId?: string;
+   };
+ }
+ 
+@@ -2189,18 +2190,26 @@
+   const userId = (req as any).authenticatedUserId || 'admin_user';
+   const user = users.find(u => u.id === userId) || users[0];
+ 
++  const clientMessageId = typeof req.body.clientMessageId === 'string' ? req.body.clientMessageId : undefined;
++  if (clientMessageId) {
++    const existing = messages.find(m => m.orderId === order.id && m.metadata?.clientMessageId === clientMessageId);
++    if (existing) return res.json({ success: true, message: existing, deduplicated: true });
++  }
++
+   const newMsg: Message = {
+-    id: 'msg_' + Date.now(),
++    id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+     orderId: order.id,
+     senderId: user.id,
+     senderName: user.name,
+-    text: req.body.text,
+-    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
++    text: req.body.text || '',
++    timestamp: new Date().toISOString(),
++    type: req.body.type || 'message',
++    fileInfo: req.body.fileInfo,
++    metadata: { ...(req.body.metadata || {}), ...(clientMessageId ? { clientMessageId } : {}) }
+   };
+ 
+   messages.push(newMsg);
+-
+-  // Broadcast WebSocket
++  saveMessagesToDisk();
+   broadcastMessage(newMsg, order.id);
+ 
+   res.json({ success: true, message: newMsg });
+@@ -3572,6 +3581,15 @@
+   const { orderId, targetUserId, rating, comment, orderTitle } = req.body;
+   if (!targetUserId) return res.status(400).json({ error: 'Target user ID is required' });
+ 
++  const order = orderId ? orders.find(o => o.id === orderId) : undefined;
++  if (!order) return res.status(404).json({ error: 'Workstream order not found' });
++  if (order.status !== 'completed') {
++    return res.status(409).json({ error: `Reviews can only be submitted for completed Workstreams (current status: ${order.status}).` });
++  }
++  if (reviews.some(r => r.orderId === order.id && r.reviewerId === caller.id)) {
++    return res.status(409).json({ error: 'A review has already been submitted for this Workstream.' });
++  }
++
+   const newReview: Review = {
+     id: 'rev_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+     orderId: orderId || ('ord_' + Date.now()),
+@@ -3751,15 +3769,22 @@
+   }
+   if (!order) return res.status(404).json({ error: 'Order not found' });
+ 
++  const clientMessageId = typeof req.body.clientMessageId === 'string' ? req.body.clientMessageId : undefined;
++  if (clientMessageId) {
++    const existing = messages.find(m => m.orderId === orderId && m.metadata?.clientMessageId === clientMessageId);
++    if (existing) return res.json(existing);
++  }
++
+   const newMsg: Message = {
+     id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+     orderId,
+     senderId: caller.id,
+     senderName: caller.name,
+     text: req.body.text || '',
+-    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
++    timestamp: new Date().toISOString(),
+     type: req.body.type || 'message',
+-    fileInfo: req.body.fileInfo
++    fileInfo: req.body.fileInfo,
++    metadata: { ...(req.body.metadata || {}), ...(clientMessageId ? { clientMessageId } : {}) }
+   };
+ 
+   messages.push(newMsg);
+@@ -4597,6 +4622,14 @@
+ 
+         const text = parsed.text || '';
+         const msgType = parsed.msgType || 'message';
++        const clientMessageId = typeof parsed.clientMessageId === 'string' ? parsed.clientMessageId : undefined;
++        if (clientMessageId) {
++          const existing = messages.find(m => m.orderId === order.id && m.metadata?.clientMessageId === clientMessageId);
++          if (existing) {
++            ws.send(JSON.stringify({ type: 'MESSAGE_ACK', clientMessageId, message: existing }));
++            return;
++          }
++        }
+ 
+         const newMsg: Message = {
+           id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+@@ -4607,12 +4640,13 @@
+           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+           type: msgType,
+           fileInfo: parsed.fileInfo,
+-          metadata: parsed.metadata
++          metadata: { ...(parsed.metadata || {}), ...(clientMessageId ? { clientMessageId } : {}) }
+         };
+ 
+         messages.push(newMsg);
+         saveMessagesToDisk();
+         broadcastMessage(newMsg, order.id);
++        ws.send(JSON.stringify({ type: 'MESSAGE_ACK', clientMessageId, message: newMsg }));
+       }
+     } catch (e) {
+       console.error('WS message processing error:', e);
+--- src/App.tsx
++++ src/App.tsx
+@@ -191,20 +191,6 @@
+ 
+ 
+ 
+-  const activeSharedFiles: SharedFileItem[] = useMemo(() => {
+-    if (!selectedOrder) return [];
+-    return messages
+-      .filter(m => m.orderId === selectedOrder.id && (m.type === 'file' || m.fileInfo))
+-      .map(m => ({
+-        id: m.id,
+-        name: m.fileInfo?.name || 'attachment.pdf',
+-        size: m.fileInfo?.size || '1.0 MB',
+-        url: m.fileInfo?.url || '#',
+-        uploadedAt: m.timestamp,
+-        uploadedBy: m.senderName
+-      }));
+-  }, [selectedOrder, messages]);
+-
+ 
+ 
+ 
+@@ -574,6 +560,7 @@
+     setSelectedOrder: hookSetSelectedOrder, 
+     messages: hookMessages, 
+     setMessages: hookSetMessages,
++    activeSharedFiles: hookActiveSharedFiles,
+     newMessageText: hookNewMessageText, 
+     setNewMessageText: hookSetNewMessageText, 
+     fetchMessages,
+@@ -581,12 +568,13 @@
+     handleDeliverWork,
+     workstreamSearch,
+     handleRequestRevision,
+     handleStartWorkstreamModalSubmit,
+-    wsRef
++    wsRef,
++    sendMessage
+   } = useWorkstream({ 
+     orders, usersList, gigs, messages, currentUser, impersonatedUser,
+     workstreamTab, starredWorkstreams, selectedPersonFilter, projectFilterSearch, workstreamSearch,
+     setOrders, setSelectedOrder, setIsStartWorkstreamModalOpen, navigate, financeLedger,
+-    selectedOrder, setNewMessageText
++    selectedOrder, setNewMessageText, setMessages
+   });
+ 
+   // Fetch initial data & restore user session
+@@ -606,93 +594,6 @@
+     }
+   }, []);
+ 
+-  // Real-time Workstream WebSocket Connection & Live Broadcasting
+-  useEffect(() => {
+-    let socket: WebSocket | null = null;
+-    let reconnectTimeout: any = null;
+-    let isUnmounted = false;
+-
+-    const connectWebSocket = () => {
+-      if (isUnmounted) return;
+-      try {
+-        const token = localStorage.getItem('workperhour_token') || localStorage.getItem('token') || (impersonatedUser ? impersonatedUser.id : (currentUser ? currentUser.id : 'admin_user'));
+-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+-        const wsUrl = `${protocol}//${window.location.host}?token=${encodeURIComponent(token || 'admin_user')}`;
+-        
+-        socket = new WebSocket(wsUrl);
+-        wsRef.current = socket;
+-
+-        socket.onopen = () => {
+-          console.log('📡 Real-time Workstream WebSocket connected successfully');
+-        };
+-
+-        socket.onmessage = (event) => {
+-          try {
+-            const data = JSON.parse(event.data);
+-            if (data.type === 'MESSAGE_RECEIVED' && data.message) {
+-              const incomingMsg = data.message;
+-              
+-              // 1. Update active conversation messages without duplicates
+-              setMessages(prev => {
+-                const alreadyExists = prev.some(m => m.id === incomingMsg.id);
+-                if (alreadyExists) return prev;
+-                return [...prev, incomingMsg];
+-              });
+-
+-              // 2. Dynamically update orders last message preview in list
+-              setOrders(prev => prev.map(o => {
+-                if (o.id === incomingMsg.orderId) {
+-                  return {
+-                    ...o,
+-                    lastMessage: incomingMsg.text,
+-                    lastMessageTime: incomingMsg.timestamp
+-                  };
+-                }
+-                return o;
+-              }));
+-            } else if (data.type === 'WORKSTREAM_UPDATED') {
+-              setOrders(prev => prev.map(o => {
+-                if (o.id === data.orderId) {
+-                  return {
+-                    ...o,
+-                    lastMessage: data.lastMessage,
+-                    lastMessageTime: data.lastMessageTime
+-                  };
+-                }
+-                return o;
+-              }));
+-            }
+-          } catch (e) {
+-            console.error('Error handling WebSocket message:', e);
+-          }
+-        };
+-
+-        socket.onerror = () => {
+-          // Soft error handling, will retry on close
+-        };
+-
+-        socket.onclose = () => {
+-          if (!isUnmounted) {
+-            reconnectTimeout = setTimeout(connectWebSocket, 3000);
+-          }
+-        };
+-      } catch (err) {
+-        if (!isUnmounted) {
+-          reconnectTimeout = setTimeout(connectWebSocket, 3000);
+-        }
+-      }
+-    };
+-
+-    connectWebSocket();
+-
+-    return () => {
+-      isUnmounted = true;
+-      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+-      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+-        socket.close();
+-      }
+-    };
+-  }, [currentUser?.id, impersonatedUser?.id]);
+ 
+   // Keep messages in sync whenever selected order changes
+   useEffect(() => {
+@@ -3691,8 +3592,8 @@
+                 return (
+                   <WorkstreamWorkspace
+                     order={activeWsOrder}
+-                    messages={messages.filter(m => m.orderId === activeWsOrder.id)}
+-                    files={activeSharedFiles}
++                    messages={hookMessages.filter(m => m.orderId === activeWsOrder.id)}
++                    files={hookActiveSharedFiles}
+                     currentUser={impersonatedUser || currentUser}
+                     usersList={usersList}
+                     partner={partnerUser}
+@@ -3704,32 +3605,19 @@
+                       setNewMessageText(text);
+                       const currentUid = impersonatedUser ? impersonatedUser.id : (currentUser ? currentUser.id : 'user_1');
+                       const currentUname = impersonatedUser ? impersonatedUser.name : (currentUser ? currentUser.name : 'Guest');
+-                      const payload = {
++                      sendMessage({
+                         type: 'NEW_MESSAGE',
+                         msgType: 'message',
+                         orderId: activeWsOrder.id,
+                         senderId: currentUid,
+                         senderName: currentUname,
+                         text
+-                      };
+-                      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+-                        wsRef.current.send(JSON.stringify(payload));
+-                      } else {
+-                        const token = localStorage.getItem('workperhour_token') || localStorage.getItem('token');
+-                        fetch(`/api/messages`, {
+-                          method: 'POST',
+-                          headers: { 
+-                            'Content-Type': 'application/json',
+-                            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+-                          },
+-                          body: JSON.stringify({ orderId: activeWsOrder.id, text, type: 'message' })
+-                        }).then(() => fetchMessages(activeWsOrder.id));
+-                      }
++                      });
+                     }}
+                     onAttachFile={(file) => {
+                       const currentUid = impersonatedUser ? impersonatedUser.id : (currentUser ? currentUser.id : 'user_1');
+                       const currentUname = impersonatedUser ? impersonatedUser.name : (currentUser ? currentUser.name : 'Guest');
+-                      const payload = {
++                      sendMessage({
+                         type: 'NEW_MESSAGE',
+                         msgType: 'file',
+                         orderId: activeWsOrder.id,
+@@ -3737,20 +3625,7 @@
+                         senderName: currentUname,
+                         text: `Attached file: ${file.name}`,
+                         fileInfo: file
+-                      };
+-                      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+-                        wsRef.current.send(JSON.stringify(payload));
+-                      } else {
+-                        const token = localStorage.getItem('workperhour_token') || localStorage.getItem('token');
+-                        fetch(`/api/messages`, {
+-                          method: 'POST',
+-                          headers: { 
+-                            'Content-Type': 'application/json',
+-                          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+-                          },
+-                          body: JSON.stringify({ orderId: activeWsOrder.id, text: payload.text, type: 'file', fileInfo: file })
+-                        }).then(() => fetchMessages(activeWsOrder.id));
+-                      }
++                      });
+                     }}
+                     onReleaseEscrow={handleReleaseEscrow}
+                     onDeliverWork={handleDeliverWork}
+--- src/components/workstream/WorkstreamWorkspace.tsx
++++ src/components/workstream/WorkstreamWorkspace.tsx
+@@ -75,9 +75,8 @@
+           requirementText: reqText
+         }
+       })
+-    }).then(() => {
+-      onSendMessage(`📋 Project Requirement Logged: "${reqText}"`);
+     }).catch(() => {
++      // If the dedicated system-event endpoint fails, fall back to the normal Workstream message path once.
+       onSendMessage(`📋 Project Requirement Logged: "${reqText}"`);
+     });
+   };
+@@ -98,9 +97,8 @@
+           action: 'missed_call'
+         }
+       })
+-    }).then(() => {
+-      onSendMessage(`📞 Missed Video Meeting with ${partner?.name || 'collaborator'}`);
+     }).catch(() => {
++      // If the dedicated system-event endpoint fails, fall back to the normal Workstream message path once.
+       onSendMessage(`📞 Missed Video Meeting with ${partner?.name || 'collaborator'}`);
+     });
+   };
+--- src/components/workstream/WorkstreamVideoCallModal.tsx
++++ src/components/workstream/WorkstreamVideoCallModal.tsx
+@@ -54,7 +54,7 @@
+     return () => clearInterval(timer);
+   }, [isOpen]);
+ 
+-  // Request browser WebRTC media stream
++  // Request browser camera/microphone media preview
+   useEffect(() => {
+     if (!isOpen) {
+       stopMediaTracks();
+@@ -76,7 +76,7 @@
+         }
+       } catch (err: any) {
+         console.warn('WebRTC getUserMedia error or permission denied:', err);
+-        setMediaError('Browser camera/microphone permission required. Virtual WebRTC meeting stream active.');
++        setMediaError('Browser camera/microphone permission is required for the local media preview.');
+       }
+     }
+ 
+@@ -206,7 +206,7 @@
+             />
+             <div className="overflow-hidden">
+               <h5 className="text-xs font-bold truncate">{partner?.name || 'Project Collaborator'}</h5>
+-              <p className="text-[10px] text-slate-400 truncate">WebRTC Video Active</p>
++              <p className="text-[10px] text-slate-400 truncate">Camera / Microphone Preview Active</p>
+             </div>
+           </div>
+         </div>
+@@ -251,7 +251,7 @@
+                 <h3 className="text-base font-bold text-white tracking-tight">WorkPerHour Meeting Room</h3>
+                 <span className="px-2.5 py-0.5 bg-emerald-950 text-emerald-400 border border-emerald-800 text-[10px] font-bold rounded-full flex items-center gap-1">
+                   <Lock className="w-3 h-3 text-emerald-400" />
+-                  <span>256-Bit Encrypted WebRTC</span>
++                  <span>Secure Workstream Meeting Session</span>
+                 </span>
+               </div>
+               <p className="text-xs text-slate-400 mt-0.5">
+@@ -387,7 +387,7 @@
+                       <h4 className="text-sm font-bold text-white">{partner?.name || 'Project Collaborator'}</h4>
+                       <p className="text-[11px] text-emerald-400 font-medium flex items-center justify-center gap-1 mt-0.5">
+                         <Radio className="w-3 h-3 animate-pulse text-emerald-400" />
+-                        <span>Connected • HD WebRTC Audio</span>
++                        <span>Browser Audio Preview Active</span>
+                       </p>
+                     </div>
+                   </div>
+--- src/hooks/workstream/useWorkstreamRealtime.ts
++++ src/hooks/workstream/useWorkstreamRealtime.ts
+@@ -1,4 +1,4 @@
+-import { useEffect, useRef } from 'react';
++import { useCallback, useEffect, useRef } from 'react';
+ import { Message, Order } from '../../types';
+ 
+ export interface UseWorkstreamRealtimeProps {
+@@ -6,6 +6,7 @@
+   setOrders: React.Dispatch<React.SetStateAction<Order[]>>;
+   currentUser?: { id: string } | null;
+   impersonatedUser?: { id: string } | null;
++  selectedOrderId?: string | null;
+ }
+ 
+ /**
+@@ -16,9 +17,63 @@
+   setMessages,
+   setOrders,
+   currentUser,
+-  impersonatedUser
++  impersonatedUser,
++  selectedOrderId
+ }: UseWorkstreamRealtimeProps) {
+   const wsRef = useRef<WebSocket | null>(null);
++  const pendingFallbacksRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
++  const selectedOrderIdRef = useRef<string | null>(selectedOrderId || null);
++
++  useEffect(() => {
++    selectedOrderIdRef.current = selectedOrderId || null;
++  }, [selectedOrderId]);
++
++  const fetchSelectedHistory = useCallback(async () => {
++    const orderId = selectedOrderIdRef.current;
++    if (!orderId) return;
++    try {
++      const token = localStorage.getItem('workperhour_token') || localStorage.getItem('token');
++      const res = await fetch(`/api/messages/${orderId}`, {
++        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) }
++      });
++      if (!res.ok) return;
++      const data = await res.json();
++      if (!Array.isArray(data)) return;
++      setMessages(prev => {
++        const other = prev.filter(m => m.orderId !== orderId);
++        return [...other, ...data];
++      });
++    } catch (err) {
++      console.warn('Workstream reconnect history sync failed:', err);
++    }
++  }, [setMessages]);
++
++  const sendMessage = useCallback((payload: Record<string, any>) => {
++    const clientMessageId = payload.clientMessageId || `cm_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
++    const enriched = { ...payload, clientMessageId };
++
++    const fallback = () => {
++      if (!pendingFallbacksRef.current.has(clientMessageId)) return;
++      pendingFallbacksRef.current.delete(clientMessageId);
++      const token = localStorage.getItem('workperhour_token') || localStorage.getItem('token');
++      fetch('/api/messages', {
++        method: 'POST',
++        headers: {
++          'Content-Type': 'application/json',
++          ...(token ? { Authorization: `Bearer ${token}` } : {})
++        },
++        body: JSON.stringify(enriched)
++      }).then(() => fetchSelectedHistory()).catch(err => console.error('Workstream message fallback failed:', err));
++    };
++
++    if (wsRef.current?.readyState === WebSocket.OPEN) {
++      wsRef.current.send(JSON.stringify(enriched));
++      pendingFallbacksRef.current.set(clientMessageId, setTimeout(fallback, 5000));
++    } else {
++      pendingFallbacksRef.current.set(clientMessageId, setTimeout(fallback, 0));
++    }
++    return clientMessageId;
++  }, [fetchSelectedHistory]);
+ 
+   useEffect(() => {
+     const activeUser = impersonatedUser || currentUser;
+@@ -26,7 +81,7 @@
+     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+     const wsUrl = `${protocol}//${window.location.host}?token=${encodeURIComponent(token)}`;
+ 
+-    let reconnectTimeout: any = null;
++    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+     let isUnmounted = false;
+ 
+     const connect = () => {
+@@ -36,59 +91,61 @@
+ 
+       socket.onopen = () => {
+         console.log('Real-time Workstream WebSocket connected successfully');
++        fetchSelectedHistory();
+       };
+ 
+       socket.onmessage = (event) => {
+         try {
+           const data = JSON.parse(event.data);
++          if (data.type === 'MESSAGE_ACK' && data.clientMessageId) {
++            const timer = pendingFallbacksRef.current.get(data.clientMessageId);
++            if (timer) clearTimeout(timer);
++            pendingFallbacksRef.current.delete(data.clientMessageId);
++            if (data.message) {
++              setMessages(prev => prev.some(m => m.id === data.message.id) ? prev : [...prev, data.message]);
++            }
++            return;
++          }
+           if (data.type === 'MESSAGE_RECEIVED' && data.message) {
+             const incomingMsg = data.message;
+             setMessages(prev => {
+-              const alreadyExists = prev.some(m => m.id === incomingMsg.id);
++              const alreadyExists = prev.some(m => m.id === incomingMsg.id || (incomingMsg.metadata?.clientMessageId && m.metadata?.clientMessageId === incomingMsg.metadata.clientMessageId));
+               if (alreadyExists) return prev;
+               const next = [...prev, incomingMsg];
+-              return next.sort((a, b) => (a.id > b.id ? 1 : -1));
++              return next.sort((a, b) => {
++                const at = Date.parse(a.timestamp) || 0;
++                const bt = Date.parse(b.timestamp) || 0;
++                return at - bt || a.id.localeCompare(b.id);
++              });
+             });
+-            setOrders(prev => prev.map(o => {
+-              if (o.id === incomingMsg.orderId) {
+-                return {
+-                  ...o,
+-                  lastMessage: incomingMsg.text,
+-                  lastMessageTime: incomingMsg.timestamp
+-                };
+-              }
+-              return o;
+-            }));
++            setOrders(prev => prev.map(o => o.id === incomingMsg.orderId ? {
++              ...o,
++              lastMessage: incomingMsg.text,
++              lastMessageTime: incomingMsg.timestamp
++            } : o));
+           }
+         } catch (err) {
+           console.error('Error parsing WebSocket message:', err);
+         }
+       };
+ 
+-      socket.onerror = (err) => {
+-        console.warn('WebSocket error encountered:', err);
+-      };
+-
++      socket.onerror = (err) => console.warn('WebSocket error encountered:', err);
+       socket.onclose = () => {
+-        console.log('Workstream WebSocket disconnected, scheduling reconnect...');
+-        if (!isUnmounted) {
+-          reconnectTimeout = setTimeout(connect, 3000);
+-        }
++        if (!isUnmounted) reconnectTimeout = setTimeout(connect, 3000);
+       };
+     };
+ 
+     connect();
+-
+     return () => {
+       isUnmounted = true;
+       if (reconnectTimeout) clearTimeout(reconnectTimeout);
+-      if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+-        wsRef.current.close();
+-      }
++      pendingFallbacksRef.current.forEach(clearTimeout);
++      pendingFallbacksRef.current.clear();
++      if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) wsRef.current.close();
+     };
+-  }, [currentUser, impersonatedUser, setMessages, setOrders]);
+-
++  }, [currentUser, impersonatedUser, setMessages, setOrders, fetchSelectedHistory]);
+   return {
+-    wsRef
++    wsRef,
++    sendMessage
+   };
+ }
+--- src/hooks/workstream/useWorkstream.ts
++++ src/hooks/workstream/useWorkstream.ts
+@@ -20,8 +20,11 @@
+   const list = useWorkstreamList(props);
+   const filters = useWorkstreamFilters(props);
+   const selection = useWorkstreamSelection();
+-  const messages = useWorkstreamMessages();
+-  const realtime = useWorkstreamRealtime(props);
++  const messages = useWorkstreamMessages({
++    messages: props?.messages,
++    setMessages: props?.setMessages
++  });
++  const realtime = useWorkstreamRealtime({ ...props, selectedOrderId: currentSelectedOrder?.id || props?.selectedOrder?.id || null });
+   const actions = useWorkstreamActions(props);
+ 
+   // Synchronize authoritative selected order with updated orders list (Phase 29)
+@@ -54,14 +57,17 @@
+     setMessages: activeSetMessages
+   });
+ 
++  const review = useWorkstreamReview({
++    selectedOrder: currentSelectedOrder
++  });
++
+   const escrow = useWorkstreamEscrow({
+     selectedOrder: currentSelectedOrder,
+     setOrders: props?.setOrders,
+     setSelectedOrder: props?.setSelectedOrder || selection.setSelectedOrder,
+-    setMessages: activeSetMessages
++    setMessages: activeSetMessages,
++    submitReview: review.handleSubmitReview
+   });
+-
+-  const review = useWorkstreamReview(props);
+   const meeting = useWorkstreamMeeting(props);
+ 
+   return {
+--- src/hooks/workstream/useWorkstreamReview.ts
++++ src/hooks/workstream/useWorkstreamReview.ts
+@@ -1,6 +1,38 @@
+-/**
+- * Hook responsible for managing workstream review state and submission.
+- */
+-export function useWorkstreamReview(props: any) {
+-  return {};
++import { Order } from '../../types';
++
++export interface UseWorkstreamReviewProps {
++  selectedOrder?: Order | null;
++}
++
++export function useWorkstreamReview({ selectedOrder }: UseWorkstreamReviewProps = {}) {
++  const handleSubmitReview = async (review: { rating: number; comment: string }) => {
++    if (!selectedOrder) return { success: false, error: 'No Workstream selected.' };
++
++    const token = localStorage.getItem('workperhour_token') || localStorage.getItem('token');
++    const headers: Record<string, string> = {
++      'Content-Type': 'application/json',
++      ...(token ? { Authorization: `Bearer ${token}` } : {})
++    };
++
++    const res = await fetch('/api/reviews', {
++      method: 'POST',
++      headers,
++      body: JSON.stringify({
++        orderId: selectedOrder.id,
++        targetUserId: selectedOrder.sellerId,
++        rating: review.rating,
++        comment: review.comment,
++        orderTitle: selectedOrder.title
++      })
++    });
++
++    if (!res.ok) {
++      const data = await res.json().catch(() => ({}));
++      return { success: false, error: data.error || 'Failed to submit review.' };
++    }
++
++    return { success: true, ...(await res.json()) };
++  };
++
++  return { handleSubmitReview };
+ }
+--- src/hooks/workstream/useWorkstreamActions.ts
++++ src/hooks/workstream/useWorkstreamActions.ts
+@@ -63,23 +63,9 @@
+       console.error('Failed to create persistent order on server:', err);
+     }
+ 
+-    // Local fallback if offline
+-    const newOrder: Order = {
+-      id: 'ord_' + Date.now(),
+-      title: data.title,
+-      buyerId: currentUser?.id || 'admin_user',
+-      sellerId: data.partnerId,
+-      amount: data.amount,
+-      status: 'funded_in_escrow',
+-      createdAt: new Date().toISOString().split('T')[0],
+-      dueDate,
+-      requirements: data.requirements,
+-      feeBreakdown: financeLedger.quoteOrder(data.amount)
+-    };
+-    setOrders(prev => [newOrder, ...prev]);
+-    setSelectedOrder(newOrder);
+-    setIsStartWorkstreamModalOpen(false);
+-    navigate(`/messages/${newOrder.id}`);
++    // Do not manufacture a local order/escrow state when the authoritative server creation fails.
++    // The caller must retry after connectivity/server recovery.
++    console.error('Workstream creation failed; no local fallback order was created.');
+   };
+ 
+   const handleContactSeller = async (sellerId: string, _sellerName: string, _gigTitle: string) => {
+--- src/hooks/workstream/useWorkstreamMessages.ts
++++ src/hooks/workstream/useWorkstreamMessages.ts
+@@ -5,8 +5,15 @@
+  * Hook responsible for managing workstream messages state, per-workstream cache isolation,
+  * race-condition prevention during workstream switching, and message ordering.
+  */
+-export function useWorkstreamMessages() {
+-  const [messages, setMessages] = useState<Message[]>([]);
++export interface UseWorkstreamMessagesProps {
++  messages?: Message[];
++  setMessages?: React.Dispatch<React.SetStateAction<Message[]>>;
++}
++
++export function useWorkstreamMessages(props: UseWorkstreamMessagesProps = {}) {
++  const [internalMessages, setInternalMessages] = useState<Message[]>([]);
++  const messages = props.messages ?? internalMessages;
++  const setMessages = props.setMessages ?? setInternalMessages;
+   const [newMessageText, setNewMessageText] = useState('');
+   
+   // Guard against out-of-order responses when user rapidly switches workstreams
+--- src/hooks/workstream/useWorkstreamEscrow.ts
++++ src/hooks/workstream/useWorkstreamEscrow.ts
+@@ -5,6 +5,7 @@
+   setOrders: React.Dispatch<React.SetStateAction<Order[]>>;
+   setSelectedOrder: React.Dispatch<React.SetStateAction<Order | null>>;
+   setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
++  submitReview?: (review: { rating: number; comment: string }) => Promise<{ success: boolean; error?: string; [key: string]: any }>;
+ }
+ 
+ /**
+@@ -14,76 +15,67 @@
+   selectedOrder,
+   setOrders,
+   setSelectedOrder,
+-  setMessages
++  setMessages,
++  submitReview
+ }: UseWorkstreamEscrowProps) {
+ 
+   const handleReleaseEscrow = async (review: { rating: number; comment: string }) => {
+     if (!selectedOrder) return;
+ 
+-    const token = localStorage.getItem('workperhour_token') || localStorage.getItem('token');
+-    const authHeaders = {
+-      'Content-Type': 'application/json',
+-      ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+-    };
+-
+-    // 1. If not yet completed, call real backend escrow-release API
+-    if (selectedOrder.status !== 'completed') {
+-      try {
+-        const releaseRes = await fetch('/api/payments/escrow/release', {
+-          method: 'POST',
+-          headers: authHeaders,
+-          body: JSON.stringify({ orderId: selectedOrder.id })
+-        });
+-
+-        if (releaseRes.ok) {
+-          const data = await releaseRes.json();
+-          const updatedOrder = data.order || { ...selectedOrder, status: 'completed' };
+-          setOrders(prev => prev.map(o => o.id === selectedOrder.id ? updatedOrder : o));
+-          setSelectedOrder(updatedOrder);
+-        } else {
+-          const errData = await releaseRes.json().catch(() => ({}));
+-          console.warn('Backend escrow release warning:', errData.error);
+-        }
+-      } catch (err) {
+-        console.error('Failed to call backend escrow release:', err);
++    // Completed Workstreams only submit a review; they must never release escrow again.
++    if (selectedOrder.status === 'completed') {
++      const result = submitReview
++        ? await submitReview(review)
++        : { success: false, error: 'Review handler is unavailable.' };
++      if (!result.success) {
++        console.error(result.error || 'Failed to submit review.');
+       }
++      return;
+     }
+ 
+-    // Always ensure local state reflects completed status
+-    setOrders(prev => prev.map(o => o.id === selectedOrder.id ? { ...o, status: 'completed' } : o));
+-    setSelectedOrder(prev => prev ? { ...prev, status: 'completed' } : null);
+-
+-    // 2. Add completion system event
+-    const sysMsg: Message = {
+-      id: `msg_${Date.now()}`,
+-      orderId: selectedOrder.id,
+-      senderId: 'system',
+-      senderName: 'WorkSphere Escrow Vault',
+-      text: `🎉 Escrow funds ($${selectedOrder.amount.toLocaleString()}) released to seller! Workstream completed with ${review.rating}-star rating: "${review.comment}"`,
+-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+-      type: 'system',
+-      metadata: {
+-        action: 'escrow_released',
+-        amount: selectedOrder.amount
+-      }
++    const token = localStorage.getItem('workperhour_token') || localStorage.getItem('token');
++    const authHeaders = {
++      'Content-Type': 'application/json',
++      ...(token ? { Authorization: `Bearer ${token}` } : {})
+     };
+-    setMessages(prev => [...prev, sysMsg]);
+ 
+-    // 3. Post review to server
+     try {
+-      await fetch('/api/reviews', {
++      const releaseRes = await fetch('/api/payments/escrow/release', {
+         method: 'POST',
+         headers: authHeaders,
+-        body: JSON.stringify({
+-          orderId: selectedOrder.id,
+-          targetUserId: selectedOrder.sellerId,
+-          rating: review.rating,
+-          comment: review.comment,
+-          orderTitle: selectedOrder.title
+-        })
++        body: JSON.stringify({ orderId: selectedOrder.id, requestKey: `release_${selectedOrder.id}_${Date.now()}` })
+       });
++
++      const data = await releaseRes.json().catch(() => ({}));
++      if (!releaseRes.ok) {
++        console.error('Escrow release failed:', data.error || releaseRes.statusText);
++        return;
++      }
++
++      const updatedOrder = data.order || { ...selectedOrder, status: 'completed' };
++      setOrders(prev => prev.map(o => o.id === selectedOrder.id ? updatedOrder : o));
++      setSelectedOrder(updatedOrder);
++
++      const sysMsg: Message = {
++        id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
++        orderId: selectedOrder.id,
++        senderId: 'system',
++        senderName: 'WorkSphere Escrow Vault',
++        text: `🎉 Escrow funds ($${selectedOrder.amount.toLocaleString()}) released to seller! Workstream completed.`,
++        timestamp: new Date().toISOString(),
++        type: 'system',
++        metadata: { action: 'escrow_released', amount: selectedOrder.amount }
++      };
++      setMessages(prev => [...prev, sysMsg]);
++
++      if (submitReview) {
++        const reviewResult = await submitReview(review);
++        if (!reviewResult.success) {
++          console.error(reviewResult.error || 'Escrow released, but review submission failed.');
++        }
++      }
+     } catch (err) {
+-      console.error('Failed to persist escrow review:', err);
++      console.error('Failed to call backend escrow release:', err);
+     }
+   };
+ 

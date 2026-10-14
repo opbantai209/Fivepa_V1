@@ -32933,15 +32933,24 @@ app.post("/api/orders/:id/message", requireAuth, (req, res) => {
   if (!order) return res.status(404).json({ error: "Order not found" });
   const userId = req.authenticatedUserId || "admin_user";
   const user = users.find((u) => u.id === userId) || users[0];
+  const clientMessageId = typeof req.body.clientMessageId === "string" ? req.body.clientMessageId : void 0;
+  if (clientMessageId) {
+    const existing = messages.find((m) => m.orderId === order.id && m.metadata?.clientMessageId === clientMessageId);
+    if (existing) return res.json({ success: true, message: existing, deduplicated: true });
+  }
   const newMsg = {
-    id: "msg_" + Date.now(),
+    id: "msg_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
     orderId: order.id,
     senderId: user.id,
     senderName: user.name,
-    text: req.body.text,
-    timestamp: (/* @__PURE__ */ new Date()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    text: req.body.text || "",
+    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    type: req.body.type || "message",
+    fileInfo: req.body.fileInfo,
+    metadata: { ...req.body.metadata || {}, ...clientMessageId ? { clientMessageId } : {} }
   };
   messages.push(newMsg);
+  saveMessagesToDisk();
   broadcastMessage(newMsg, order.id);
   res.json({ success: true, message: newMsg });
 });
@@ -34094,6 +34103,14 @@ app.post("/api/reviews", (req, res) => {
   const caller = users.find((u) => u.id === authUserId) || users[0];
   const { orderId, targetUserId, rating, comment, orderTitle } = req.body;
   if (!targetUserId) return res.status(400).json({ error: "Target user ID is required" });
+  const order = orderId ? orders.find((o) => o.id === orderId) : void 0;
+  if (!order) return res.status(404).json({ error: "Workstream order not found" });
+  if (order.status !== "completed") {
+    return res.status(409).json({ error: `Reviews can only be submitted for completed Workstreams (current status: ${order.status}).` });
+  }
+  if (reviews.some((r) => r.orderId === order.id && r.reviewerId === caller.id)) {
+    return res.status(409).json({ error: "A review has already been submitted for this Workstream." });
+  }
   const newReview = {
     id: "rev_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
     orderId: orderId || "ord_" + Date.now(),
@@ -34954,20 +34971,29 @@ function setupWebSocketHandlers(ws) {
         if (!order) return;
         const text = parsed.text || "";
         const msgType = parsed.msgType || "message";
+        const clientMessageId = typeof parsed.clientMessageId === "string" ? parsed.clientMessageId : void 0;
+        if (clientMessageId) {
+          const existing = messages.find((m) => m.orderId === order.id && m.metadata?.clientMessageId === clientMessageId);
+          if (existing) {
+            ws.send(JSON.stringify({ type: "MESSAGE_ACK", clientMessageId, message: existing }));
+            return;
+          }
+        }
         const newMsg = {
           id: "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
           orderId: order.id,
           senderId: user.id,
           senderName: user.name,
           text: text.trim(),
-          timestamp: (/* @__PURE__ */ new Date()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          timestamp: (/* @__PURE__ */ new Date()).toISOString(),
           type: msgType,
           fileInfo: parsed.fileInfo,
-          metadata: parsed.metadata
+          metadata: { ...parsed.metadata || {}, ...clientMessageId ? { clientMessageId } : {} }
         };
         messages.push(newMsg);
         saveMessagesToDisk();
         broadcastMessage(newMsg, order.id);
+        ws.send(JSON.stringify({ type: "MESSAGE_ACK", clientMessageId, message: newMsg }));
       }
     } catch (e) {
       console.error("WS message processing error:", e);
