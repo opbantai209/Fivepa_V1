@@ -25,7 +25,7 @@ interface GigDetailViewProps {
   gigs: Gig[];
   reviews: Review[];
   navigate: (path: string, e?: React.MouseEvent) => void;
-  handleContactSeller: (freelancerId: string, freelancerName: string, gigTitle: string) => void;
+  handleContactSeller: (freelancerId: string, freelancerName: string, gigTitle: string, gigId?: string, projectId?: string) => void;
   handleCreateOrder: (orderTitle: string, priceUSD: number, sellerId: string, gigId?: string, extraIds?: string[]) => void;
   slugify?: (text: string) => string;
 }
@@ -238,7 +238,7 @@ export const GigDetailView: React.FC<GigDetailViewProps> = ({
             </div>
 
             <button 
-              onClick={() => handleContactSeller(currentGig.freelancerId, currentGig.freelancerName, currentGig.title)}
+              onClick={() => handleContactSeller(currentGig.freelancerId, currentGig.freelancerName, currentGig.title, currentGig.id)}
               className="w-full sm:w-auto px-6 py-2.5 border-2 border-slate-900 text-fiverr-dark font-bold rounded-xl text-xs hover:bg-slate-900 hover:text-white transition-colors flex items-center justify-center gap-2"
             >
               <MessageSquare className="w-4 h-4 text-emerald-600" />

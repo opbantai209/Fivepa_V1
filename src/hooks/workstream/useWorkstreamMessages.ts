@@ -48,11 +48,67 @@ export function useWorkstreamMessages() {
     }
   }, []);
 
+  const sendMessage = useCallback(async (text: string, type: string = 'text', fileInfo?: any) => {
+    const activeOrderId = activeFetchOrderIdRef.current;
+    if (!activeOrderId || !text.trim()) return;
+
+    const token = localStorage.getItem('workperhour_token') || localStorage.getItem('token');
+    const clientMessageId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
+
+    const tempMessage: Message = {
+      id: clientMessageId,
+      orderId: activeOrderId,
+      senderId: 'current_user',
+      senderName: 'You',
+      text: text.trim(),
+      timestamp: new Date().toISOString(),
+      type: type as any,
+      fileInfo,
+      status: 'sending',
+      metadata: { clientMessageId }
+    };
+
+    // Optimistic update
+    setMessages(prev => [...prev, tempMessage]);
+    setNewMessageText('');
+
+    const attemptSend = async () => {
+      try {
+        const res = await fetch(`/api/orders/${activeOrderId}/message`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({
+            text: text.trim(),
+            type,
+            fileInfo,
+            clientMessageId
+          })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          setMessages(prev => prev.map(m => m.id === clientMessageId ? { ...data.message, status: 'sent' } : m));
+        } else {
+          throw new Error('Server error');
+        }
+      } catch (err) {
+        console.error('Error sending message:', err);
+        setMessages(prev => prev.map(m => m.id === clientMessageId ? { ...m, status: 'failed' } : m));
+      }
+    };
+
+    attemptSend();
+  }, [setMessages, setNewMessageText]);
+
   return {
     messages,
     setMessages,
     newMessageText,
     setNewMessageText,
-    fetchMessages
+    fetchMessages,
+    sendMessage
   };
 }

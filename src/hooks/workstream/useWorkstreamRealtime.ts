@@ -6,6 +6,7 @@ export interface UseWorkstreamRealtimeProps {
   setOrders: React.Dispatch<React.SetStateAction<Order[]>>;
   currentUser?: { id: string } | null;
   impersonatedUser?: { id: string } | null;
+  onReconnect?: () => void;
 }
 
 /**
@@ -16,7 +17,8 @@ export function useWorkstreamRealtime({
   setMessages,
   setOrders,
   currentUser,
-  impersonatedUser
+  impersonatedUser,
+  onReconnect
 }: UseWorkstreamRealtimeProps) {
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -36,6 +38,7 @@ export function useWorkstreamRealtime({
 
       socket.onopen = () => {
         console.log('Real-time Workstream WebSocket connected successfully');
+        if (onReconnect) onReconnect();
       };
 
       socket.onmessage = (event) => {
@@ -47,7 +50,7 @@ export function useWorkstreamRealtime({
               const alreadyExists = prev.some(m => m.id === incomingMsg.id);
               if (alreadyExists) return prev;
               const next = [...prev, incomingMsg];
-              return next.sort((a, b) => (a.id > b.id ? 1 : -1));
+              return next.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
             });
             setOrders(prev => prev.map(o => {
               if (o.id === incomingMsg.orderId) {
@@ -59,6 +62,10 @@ export function useWorkstreamRealtime({
               }
               return o;
             }));
+          } else if (data.type === 'MESSAGE_ACK' && data.message) {
+            setMessages(prev => prev.map(m => 
+              m.metadata?.clientMessageId === data.clientMessageId ? data.message : m
+            ));
           }
         } catch (err) {
           console.error('Error parsing WebSocket message:', err);

@@ -36,7 +36,9 @@ export function useWorkstreamList({
       const gig = gigs.find(g => g.id === o.gigId);
       
       const orderMsgs = messages.filter(m => m.orderId === o.id);
-      const lastMsg = orderMsgs.length > 0 ? orderMsgs[orderMsgs.length - 1] : undefined;
+      // 21: Sort by timestamp to ensure we pick the chronologically latest message
+      const sortedMsgs = [...orderMsgs].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+      const lastMsg = sortedMsgs.length > 0 ? sortedMsgs[sortedMsgs.length - 1] : undefined;
 
       return {
         ...o,

@@ -1,10 +1,23 @@
+import { useState } from 'react';
+
 /**
- * Hook responsible for managing workstream meeting / video call integration.
- * Note: Current implementation is a placeholder for future WebRTC integration.
+ * Hook responsible for managing workstream meeting / video call integration state.
  */
 export function useWorkstreamMeeting(props: any) {
+  const [isVideoCallModalOpen, setIsVideoCallModalOpen] = useState(false);
+
+  const handleStartMeeting = () => {
+    setIsVideoCallModalOpen(true);
+  };
+
+  const handleEndMeeting = () => {
+    setIsVideoCallModalOpen(false);
+  };
+
   return {
-    handleStartMeeting: () => console.warn('Video meeting functionality not yet implemented.'),
-    handleEndMeeting: () => console.warn('Video meeting functionality not yet implemented.')
+    isVideoCallModalOpen,
+    setIsVideoCallModalOpen,
+    handleStartMeeting,
+    handleEndMeeting
   };
 }

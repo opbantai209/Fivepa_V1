@@ -8,8 +8,7 @@ export interface UseWorkstreamDeliveryProps {
 }
 
 /**
- * Hook responsible for managing workstream delivery state, persistent API submissions,
- * deliverable file tracking, and versioned delivery records.
+ * Hook responsible for managing workstream delivery state and persistent API submissions.
  */
 export function useWorkstreamDelivery({
   selectedOrder,
@@ -18,8 +17,8 @@ export function useWorkstreamDelivery({
   setMessages
 }: UseWorkstreamDeliveryProps) {
 
-  const handleDeliverWork = async (delivery: { notes: string; files: Array<{ name: string; size: string; url: string }> }) => {
-    if (!selectedOrder) return;
+  const handleDeliverWork = async (delivery: { notes: string; files: Array<{ name: string; size: string; url: string }> }): Promise<boolean> => {
+    if (!selectedOrder) return false;
 
     try {
       const token = localStorage.getItem('workperhour_token') || localStorage.getItem('token');
@@ -35,63 +34,34 @@ export function useWorkstreamDelivery({
         })
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        const updatedOrder = data.order || { ...selectedOrder, status: 'delivered', deliverableFiles: data.files || delivery.files };
-        setOrders(prev => prev.map(o => o.id === selectedOrder.id ? updatedOrder : o));
-        setSelectedOrder(updatedOrder);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        console.warn('Deliver work failed:', err);
+        alert(err.error || 'Failed to submit deliverables. Please check network connection.');
+        return false;
+      }
 
-        // Fetch fresh thread messages
-        const msgRes = await fetch(`/api/messages/${selectedOrder.id}`, {
-          headers: { ...(token ? { 'Authorization': `Bearer ${token}` } : {}) }
-        });
-        if (msgRes.ok) {
-          const freshMessages = await msgRes.json();
-          if (Array.isArray(freshMessages)) {
-            setMessages(prev => [...prev.filter(m => m.orderId !== selectedOrder.id), ...freshMessages]);
-            return;
-          }
+      const data = await res.json();
+      const updatedOrder = data.order || { ...selectedOrder, status: 'delivered', deliverableFiles: data.files || delivery.files };
+      setOrders(prev => prev.map(o => o.id === selectedOrder.id ? updatedOrder : o));
+      setSelectedOrder(updatedOrder);
+
+      // Fetch fresh thread messages
+      const msgRes = await fetch(`/api/messages/${selectedOrder.id}`, {
+        headers: { ...(token ? { 'Authorization': `Bearer ${token}` } : {}) }
+      });
+      if (msgRes.ok) {
+        const freshMessages = await msgRes.json();
+        if (Array.isArray(freshMessages)) {
+          setMessages(prev => [...prev.filter(m => m.orderId !== selectedOrder.id), ...freshMessages]);
         }
       }
+      return true;
     } catch (err) {
       console.error('Failed to submit persistent deliverable:', err);
+      alert('Network error submitting deliverables.');
+      return false;
     }
-
-    // Fallback local update if network is transiently offline
-    setOrders(prev => prev.map(o => o.id === selectedOrder.id ? { ...o, status: 'delivered' } : o));
-    setSelectedOrder(prev => prev ? { ...prev, status: 'delivered' } : null);
-
-    const versionNum = ((selectedOrder as any).deliveries?.length || 0) + 1;
-    const sysMsg: Message = {
-      id: `msg_${Date.now()}`,
-      orderId: selectedOrder.id,
-      senderId: 'system',
-      senderName: 'WorkSphere Deliveries',
-      text: `📦 Deliverables v${versionNum} submitted: "${delivery.notes}"`,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      type: 'system',
-      metadata: {
-        action: 'deliverable_submitted',
-        version: versionNum,
-        notes: delivery.notes
-      }
-    };
-    
-    const fileMsgs: Message[] = delivery.files.map((file, i) => ({
-      id: `msg_${Date.now()}_file_${i}`,
-      orderId: selectedOrder.id,
-      senderId: 'system',
-      senderName: 'WorkSphere Deliveries',
-      text: `File attached: ${file.name}`,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      type: 'file',
-      fileInfo: {
-        ...file,
-        type: 'deliverable'
-      }
-    }));
-
-    setMessages(prev => [...prev, sysMsg, ...fileMsgs]);
   };
 
   return {

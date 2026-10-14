@@ -24,6 +24,7 @@ export interface Review {
   gigTitle?: string;
   orderTitle?: string;
   gigId?: string;
+  projectId?: string;
 }
 
 export interface Gig {
@@ -306,7 +307,9 @@ export interface Message {
     revisionId?: string;
     deliveryVersion?: number;
     requirementText?: string;
+    clientMessageId?: string;
   };
+  status?: 'sending' | 'sent' | 'failed';
 }
 
 export interface UserEmail {

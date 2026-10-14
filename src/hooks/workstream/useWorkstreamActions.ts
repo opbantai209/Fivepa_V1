@@ -58,28 +58,12 @@ export function useWorkstreamActions({
       } else {
         const err = await res.json().catch(() => ({}));
         console.warn('Backend order creation returned status', res.status, err);
+        alert(err.error || 'Failed to create persistent workstream on server.');
       }
     } catch (err) {
       console.error('Failed to create persistent order on server:', err);
+      alert('Network error creating workstream.');
     }
-
-    // Local fallback if offline
-    const newOrder: Order = {
-      id: 'ord_' + Date.now(),
-      title: data.title,
-      buyerId: currentUser?.id || 'admin_user',
-      sellerId: data.partnerId,
-      amount: data.amount,
-      status: 'funded_in_escrow',
-      createdAt: new Date().toISOString().split('T')[0],
-      dueDate,
-      requirements: data.requirements,
-      feeBreakdown: financeLedger.quoteOrder(data.amount)
-    };
-    setOrders(prev => [newOrder, ...prev]);
-    setSelectedOrder(newOrder);
-    setIsStartWorkstreamModalOpen(false);
-    navigate(`/messages/${newOrder.id}`);
   };
 
   const handleContactSeller = async (sellerId: string, _sellerName: string, _gigTitle: string) => {

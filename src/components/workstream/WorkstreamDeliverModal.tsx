@@ -59,9 +59,9 @@ export const WorkstreamDeliverModal: React.FC<WorkstreamDeliverModalProps> = ({
     setAttachedFiles(prev => prev.filter((_, i) => i !== idx));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    onSubmitDelivery({
+    await onSubmitDelivery({
       notes: notes.trim(),
       files: attachedFiles
     });

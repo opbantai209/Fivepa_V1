@@ -936,6 +936,8 @@ interface Review {
   rating: number;
   comment?: string;
   orderTitle?: string;
+  gigId?: string;
+  projectId?: string;
   createdAt?: string;
 }
 
@@ -3600,6 +3602,8 @@ app.post('/api/reviews', (req, res) => {
     rating: Math.min(5, Math.max(1, Number(rating) || 5)),
     comment: (comment || 'Excellent collaboration and great deliverables.').trim(),
     orderTitle: orderTitle || 'Workstream Milestone Deliverable',
+    gigId: req.body.gigId,
+    projectId: req.body.projectId,
     createdAt: new Date().toISOString().split('T')[0]
   };
 
@@ -3751,22 +3755,6 @@ app.post('/api/messages', (req, res) => {
   if (!orderId) return res.status(400).json({ error: 'Order ID is required' });
 
   let order = orders.find(o => o.id === orderId);
-  if (!order) {
-    order = {
-      id: orderId,
-      title: req.body.orderTitle || 'Workstream Collaboration',
-      buyerId: caller.id,
-      sellerId: req.body.recipientId || (caller.id === 'admin_user' ? 'admin_nikhil' : 'admin_user'),
-      amount: Number(req.body.amount) || 100,
-      status: 'in_progress',
-      createdAt: new Date().toISOString().split('T')[0],
-      dueDate: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
-      requirements: 'Agreed scope via workstream.',
-      feeBreakdown: financeLedger.quoteOrder(Number(req.body.amount) || 100)
-    };
-    orders.push(order);
-    saveOrdersToDisk();
-  }
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
   const newMsg: Message = {
@@ -4596,22 +4584,9 @@ function setupWebSocketHandlers(ws: WebSocket) {
 
         let order = orders.find(o => o.id === orderId.trim());
         if (!order) {
-          order = {
-            id: orderId.trim(),
-            title: parsed.orderTitle || 'Workstream Collaboration',
-            buyerId: user.id,
-            sellerId: parsed.sellerId || (user.id === 'admin_user' ? 'admin_nikhil' : 'admin_user'),
-            amount: Number(parsed.amount) || 100,
-            status: 'in_progress',
-            createdAt: new Date().toISOString().split('T')[0],
-            dueDate: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
-            requirements: parsed.requirements || 'Agreed scope via workstream.',
-            feeBreakdown: financeLedger.quoteOrder(Number(parsed.amount) || 100)
-          };
-          orders.push(order);
-          saveOrdersToDisk();
+          ws.send(JSON.stringify({ error: 'Order not found' }));
+          return;
         }
-        if (!order) return;
 
         const text = parsed.text || '';
         const msgType = parsed.msgType || 'message';

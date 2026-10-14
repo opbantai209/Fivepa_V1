@@ -12,6 +12,7 @@ interface WorkstreamActionsPanelProps {
   onOpenReleaseModal: () => void;
   onOpenDeliverModal: () => void;
   onOpenRevisionModal: () => void;
+  onOpenReviewModal: () => void;
   onOpenInvoiceModal?: () => void;
   onStartVideoCall?: () => void;
   onAttachFiles: () => void;
@@ -24,6 +25,7 @@ export const WorkstreamActionsPanel: React.FC<WorkstreamActionsPanelProps> = ({
   onOpenReleaseModal,
   onOpenDeliverModal,
   onOpenRevisionModal,
+  onOpenReviewModal,
   onOpenInvoiceModal,
   onStartVideoCall,
   onAttachFiles,
@@ -83,7 +85,7 @@ export const WorkstreamActionsPanel: React.FC<WorkstreamActionsPanelProps> = ({
         )}
         {isBuyer && isCompleted && (
           <button
-            onClick={onOpenReleaseModal}
+            onClick={onOpenReviewModal}
             className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl text-xs font-bold text-left flex items-center justify-between transition shadow-xs cursor-pointer"
           >
             <div className="flex items-center gap-2.5">

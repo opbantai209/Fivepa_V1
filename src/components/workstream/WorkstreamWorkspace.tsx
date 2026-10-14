@@ -13,6 +13,7 @@ import { WorkstreamActionsPanel } from './WorkstreamActionsPanel';
 import { WorkstreamReleaseModal } from './WorkstreamReleaseModal';
 import { WorkstreamDeliverModal } from './WorkstreamDeliverModal';
 import { WorkstreamRevisionModal } from './WorkstreamRevisionModal';
+import { WorkstreamReviewModal } from './WorkstreamReviewModal';
 import { WorkstreamVideoCallModal } from './WorkstreamVideoCallModal';
 
 interface WorkstreamWorkspaceProps {
@@ -32,6 +33,9 @@ interface WorkstreamWorkspaceProps {
   onLogRequirement?: (requirementText: string) => void;
   onMissedCall?: () => void;
   onDisputeAssistance?: () => void;
+  isReviewModalOpen: boolean;
+  setIsReviewModalOpen: (open: boolean) => void;
+  handleSubmitReview: (review: { rating: number; comment: string; gigId?: string; projectId?: string }) => Promise<boolean>;
 }
 
 export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
@@ -50,7 +54,10 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
   onViewPartnerProfile,
   onDisputeAssistance,
   onLogRequirement,
-  onMissedCall
+  onMissedCall,
+  isReviewModalOpen,
+  setIsReviewModalOpen,
+  handleSubmitReview
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<WorkstreamSubTab>('activity');
   const [isReleaseModalOpen, setIsReleaseModalOpen] = useState(false);
@@ -75,11 +82,7 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
           requirementText: reqText
         }
       })
-    }).then(() => {
-      onSendMessage(`📋 Project Requirement Logged: "${reqText}"`);
-    }).catch(() => {
-      onSendMessage(`📋 Project Requirement Logged: "${reqText}"`);
-    });
+    }).catch(err => console.error('Failed to log requirement:', err));
   };
 
   const handleMissedCall = () => {
@@ -98,11 +101,7 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
           action: 'missed_call'
         }
       })
-    }).then(() => {
-      onSendMessage(`📞 Missed Video Meeting with ${partner?.name || 'collaborator'}`);
-    }).catch(() => {
-      onSendMessage(`📞 Missed Video Meeting with ${partner?.name || 'collaborator'}`);
-    });
+    }).catch(err => console.error('Failed to log missed call:', err));
   };
 
   const handleDownloadFile = (f: { name: string; url: string }) => {
@@ -283,6 +282,7 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
             onOpenReleaseModal={() => setIsReleaseModalOpen(true)}
             onOpenDeliverModal={() => setIsDeliverModalOpen(true)}
             onOpenRevisionModal={() => setIsRevisionModalOpen(true)}
+            onOpenReviewModal={() => setIsReviewModalOpen(true)}
             onStartVideoCall={() => setIsVideoCallModalOpen(true)}
             onAttachFiles={() => setActiveSubTab('files')}
             onDisputeAssistance={onDisputeAssistance}
@@ -324,6 +324,14 @@ export const WorkstreamWorkspace: React.FC<WorkstreamWorkspaceProps> = ({
         order={order}
         onClose={() => setIsRevisionModalOpen(false)}
         onSubmitRevision={onRequestRevision}
+      />
+      
+      <WorkstreamReviewModal
+        key={`review_${order.id}`}
+        isOpen={isReviewModalOpen}
+        order={order}
+        onClose={() => setIsReviewModalOpen(false)}
+        onSubmitReview={handleSubmitReview}
       />
     </div>
   );

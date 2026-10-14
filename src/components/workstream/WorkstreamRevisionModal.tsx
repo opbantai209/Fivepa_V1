@@ -19,10 +19,10 @@ export const WorkstreamRevisionModal: React.FC<WorkstreamRevisionModalProps> = (
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!reason.trim()) return;
-    onSubmitRevision(reason.trim());
+    await onSubmitRevision(reason.trim());
     onClose();
   };
 

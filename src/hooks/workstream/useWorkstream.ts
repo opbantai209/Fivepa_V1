@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useCallback } from 'react';
 import { useWorkstreamList } from './useWorkstreamList';
 import { useWorkstreamFilters } from './useWorkstreamFilters';
 import { useWorkstreamSelection } from './useWorkstreamSelection';
@@ -21,8 +21,6 @@ export function useWorkstream(props?: any) {
   const filters = useWorkstreamFilters(props);
   const selection = useWorkstreamSelection();
   const messages = useWorkstreamMessages();
-  const realtime = useWorkstreamRealtime(props);
-  const actions = useWorkstreamActions(props);
 
   // Synchronize authoritative selected order with updated orders list (Phase 29)
   const currentSelectedOrder = useMemo(() => {
@@ -31,6 +29,15 @@ export function useWorkstream(props?: any) {
     const authoritative = list.hydratedWorkstreamItems.find(o => o.id === raw.id);
     return authoritative || raw;
   }, [props?.selectedOrder, selection.selectedOrder, list.hydratedWorkstreamItems]);
+  
+  const onReconnect = useCallback(() => {
+    if (currentSelectedOrder) {
+      messages.fetchMessages(currentSelectedOrder.id);
+    }
+  }, [currentSelectedOrder, messages.fetchMessages]);
+
+  const realtime = useWorkstreamRealtime({ ...props, onReconnect });
+  const actions = useWorkstreamActions(props);
 
   const activeMessages = props?.messages || messages.messages;
   const activeSetMessages = props?.setMessages || messages.setMessages;
@@ -77,7 +84,6 @@ export function useWorkstream(props?: any) {
     ...revision,
     ...escrow,
     ...review,
-    ...meeting,
-    sendMessage: () => {}
+    ...meeting
   };
 }

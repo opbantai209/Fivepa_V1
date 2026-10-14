@@ -571,7 +571,10 @@ export default function App() {
     handleRequestRevision,
     handleStartWorkstreamModalSubmit,
     wsRef,
-    sendMessage
+    sendMessage,
+    isReviewModalOpen,
+    setIsReviewModalOpen,
+    handleSubmitReview
   } = useWorkstream({ 
     orders, usersList, gigs, messages, currentUser, impersonatedUser,
     workstreamTab, starredWorkstreams, selectedPersonFilter, projectFilterSearch, workstreamSearch,
@@ -737,18 +740,19 @@ export default function App() {
 
 
 
-  const handleContactSeller = async (sellerId: string, sellerName: string, gigTitle: string) => {
+  const handleContactSeller = async (sellerId: string, sellerName: string, gigTitle: string, gigId?: string, projectId?: string) => {
     const currentUid = impersonatedUser ? impersonatedUser.id : currentUser?.id;
     
-    // 1. Search for existing conversation between current user and this seller
+    // 1. Search for existing conversation between current user and this seller for this specific gig/project
     let existingOrder = orders.find(o => 
-      (o.buyerId === currentUid && o.sellerId === sellerId) || 
-      (o.sellerId === currentUid && o.buyerId === sellerId)
+      (o.buyerId === currentUid && o.sellerId === sellerId) &&
+      (gigId ? o.gigId === gigId : (projectId ? o.projectId === projectId : true))
     );
     
     if (existingOrder) {
       setSelectedOrder(existingOrder);
       await fetchMessages(existingOrder.id);
+      navigate(`/messages/${existingOrder.id}`);
     } else {
       if (!currentUser) {
         setIsLoginModalOpen(true);
@@ -770,6 +774,8 @@ export default function App() {
             title: `Inquiry: ${gigTitle}`,
             buyerId: currentUid,
             sellerId: sellerId,
+            gigId,
+            projectId,
             amount: 0,
             dueDate: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0]
           })
@@ -786,7 +792,7 @@ export default function App() {
         setSelectedOrder(newChatOrd);
 
         // Send initial inquiry message
-        const initText = `Hi ${sellerName}, I am interested in your gig: "${gigTitle}". Let's discuss details!`;
+        const initText = `Hi ${sellerName}, I am interested in ${gigId ? `your gig: "${gigTitle}"` : `your project`}. Let's discuss details!`;
         await fetch('/api/messages', {
           method: 'POST',
           headers: authHeaders,
@@ -803,7 +809,6 @@ export default function App() {
         console.error('Error creating contact chat:', err);
       }
     }
-
   };
 
   // Category Management Handlers
@@ -3657,6 +3662,9 @@ export default function App() {
                     onReleaseEscrow={handleReleaseEscrow}
                     onDeliverWork={handleDeliverWork}
                     onRequestRevision={handleRequestRevision}
+                    isReviewModalOpen={isReviewModalOpen}
+                    setIsReviewModalOpen={setIsReviewModalOpen}
+                    handleSubmitReview={handleSubmitReview}
                     onViewPartnerProfile={(user) => navigate('/' + (user.username || slugify(user.name)))}
                     onDisputeAssistance={() => navigate('/admin')}
                   />
